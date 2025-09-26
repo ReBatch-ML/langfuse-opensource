@@ -1,10 +1,9 @@
 import React, { useMemo } from "react";
 import { api } from "@/src/utils/api";
-import { BigNumber } from "@/src/features/widgets/chart-library/BigNumber";
 import { type FilterState } from "@langfuse/shared";
 import { mapLegacyUiTableFilterToView } from "@/src/features/query";
 import { type z } from "zod";
-import { views, metricAggregations } from "@/src/features/query";
+import { type views, type metricAggregations } from "@/src/features/query";
 import { DashboardCard } from "@/src/features/dashboard/components/cards/DashboardCard";
 import { BaseTimeSeriesChart } from "@/src/features/dashboard/components/BaseTimeSeriesChart";
 import { TotalMetric } from "@/src/features/dashboard/components/TotalMetric";
@@ -99,7 +98,7 @@ export function DistinctUserCountWidget({
     },
   );
 
-  const totalUserCount = totalCountQuery.data?.[0]?.count_distinctUsers || 0;
+  const totalUserCount = Number(totalCountQuery.data?.[0]?.count_distinctUsers) || 0;
 
   const timeSeriesData = useMemo(() => {
     return timeSeriesQuery.data
