@@ -39,10 +39,10 @@ export function DistinctUserCountWidget({
       projectId,
       query: {
         view: "traces" as z.infer<typeof views>,
-        dimensions: [],
+        dimensions: [{ field: "userId" }],
         metrics: [
           {
-            measure: "distinctUsers",
+            measure: "count",
             aggregation: "count" as z.infer<typeof metricAggregations>,
           },
         ],
@@ -72,10 +72,10 @@ export function DistinctUserCountWidget({
       projectId,
       query: {
         view: "traces" as z.infer<typeof views>,
-        dimensions: [],
+        dimensions: [{ field: "userId" }],
         metrics: [
           {
-            measure: "distinctUsers",
+            measure: "count",
             aggregation: "count" as z.infer<typeof metricAggregations>,
           },
         ],
@@ -98,22 +98,38 @@ export function DistinctUserCountWidget({
     },
   );
 
-  const totalUserCount = Number(totalCountQuery.data?.[0]?.count_distinctUsers) || 0;
+  const totalUserCount = totalCountQuery.data?.length || 0;
 
   const timeSeriesData = useMemo(() => {
-    return timeSeriesQuery.data
-      ? timeSeriesQuery.data.map((item) => {
-          return {
-            ts: new Date(item.time_dimension as any).getTime(),
-            values: [
-              {
-                label: "Distinct Users",
-                value: Number(item.count_distinctUsers),
-              },
-            ],
-          };
-        })
-      : [];
+    if (!timeSeriesQuery.data) return [];
+    
+    // Group by time dimension and count distinct users per time period
+    const groupedByTime = timeSeriesQuery.data.reduce<
+      Record<number, Set<string>>
+    >((acc, item) => {
+      const ts = new Date(item.time_dimension as any).getTime();
+      const userId = item.userId as string;
+      
+      if (!acc[ts]) {
+        acc[ts] = new Set();
+      }
+      if (userId) {
+        acc[ts].add(userId);
+      }
+      
+      return acc;
+    }, {});
+    
+    // Transform to the expected format
+    return Object.entries(groupedByTime).map(([timestamp, userIds]) => ({
+      ts: Number(timestamp),
+      values: [
+        {
+          label: "Distinct Users",
+          value: userIds.size,
+        },
+      ],
+    }));
   }, [timeSeriesQuery.data]);
 
   const hasData = timeSeriesData.length > 0;
