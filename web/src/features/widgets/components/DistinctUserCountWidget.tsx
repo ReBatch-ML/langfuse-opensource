@@ -13,6 +13,11 @@ import {
   type DashboardDateRangeAggregationOption 
 } from "@/src/utils/date-range-utils";
 import { NoDataOrLoading } from "@/src/components/NoDataOrLoading";
+import { 
+  extractTimeSeriesData, 
+  fillMissingValuesAndTransform 
+} from "@/src/features/dashboard/components/hooks";
+import { type DatabaseRow } from "@/src/server/api/services/sqlInterface";
 
 interface DistinctUserCountWidgetProps {
   projectId: string;
@@ -103,26 +108,38 @@ export function DistinctUserCountWidget({
   const timeSeriesData = useMemo(() => {
     if (!timeSeriesQuery.data) return [];
     
-    // Group by time dimension and count distinct users per time period
-    const groupedByTime = timeSeriesQuery.data.reduce<
-      Record<number, Set<string>>
-    >((acc, item) => {
-      const ts = new Date(item.time_dimension as any).getTime();
-      const userId = item.userId as string;
-      
-      if (!acc[ts]) {
-        acc[ts] = new Set();
+    // Use the helper functions to properly process time series data with dimensions
+    const extractedData = extractTimeSeriesData(
+      timeSeriesQuery.data as DatabaseRow[],
+      "time_dimension",
+      [
+        {
+          uniqueIdentifierColumns: [{ accessor: "userId" }],
+          valueColumn: "count_count",
+        },
+      ],
+    );
+    
+    // Group by time and count distinct users per time period
+    const groupedByTime = new Map<number, Set<string>>();
+    
+    extractedData.forEach((chartData, timestamp) => {
+      if (!groupedByTime.has(timestamp)) {
+        groupedByTime.set(timestamp, new Set());
       }
-      if (userId) {
-        acc[ts].add(userId);
-      }
       
-      return acc;
-    }, {});
+      chartData.forEach((data) => {
+        // Extract userId from the label (which is the userId)
+        const userId = data.label;
+        if (userId) {
+          groupedByTime.get(timestamp)!.add(userId);
+        }
+      });
+    });
     
     // Transform to the expected format
-    return Object.entries(groupedByTime).map(([timestamp, userIds]) => ({
-      ts: Number(timestamp),
+    const result = Array.from(groupedByTime.entries()).map(([timestamp, userIds]) => ({
+      ts: timestamp,
       values: [
         {
           label: "Distinct Users",
@@ -130,6 +147,11 @@ export function DistinctUserCountWidget({
         },
       ],
     }));
+    
+    return fillMissingValuesAndTransform(
+      new Map(result.map(item => [item.ts, item.values])),
+      ["Distinct Users"]
+    );
   }, [timeSeriesQuery.data]);
 
   const hasData = timeSeriesData.length > 0;
