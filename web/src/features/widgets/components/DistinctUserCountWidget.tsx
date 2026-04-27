@@ -5,7 +5,8 @@ import { mapLegacyUiTableFilterToView } from "@/src/features/query";
 import { type z } from "zod";
 import { type views, type metricAggregations } from "@/src/features/query";
 import { DashboardCard } from "@/src/features/dashboard/components/cards/DashboardCard";
-import { BaseTimeSeriesChart } from "@/src/features/dashboard/components/BaseTimeSeriesChart";
+import { LineChartTimeSeries } from "@/src/features/widgets/chart-library/LineChartTimeSeries";
+import { timeSeriesToDataPoints } from "@/src/features/dashboard/lib/chart-data-adapters";
 import { TotalMetric } from "@/src/features/dashboard/components/TotalMetric";
 import { compactNumberFormatter } from "@/src/utils/numbers";
 import {
@@ -86,7 +87,8 @@ export function DistinctUserCountWidget({
         ],
         filters: mapLegacyUiTableFilterToView("traces", globalFilterState),
         timeDimension: {
-          granularity: dashboardDateRangeAggregationSettings[agg].date_trunc,
+          granularity:
+            dashboardDateRangeAggregationSettings[agg].dateTrunc ?? "day",
         },
         fromTimestamp: fromTimestamp.toISOString(),
         toTimestamp: toTimestamp.toISOString(),
@@ -124,15 +126,16 @@ export function DistinctUserCountWidget({
     const groupedByTime = new Map<number, Set<string>>();
 
     extractedData.forEach((chartData, timestamp) => {
-      if (!groupedByTime.has(timestamp)) {
-        groupedByTime.set(timestamp, new Set());
+      let userSet = groupedByTime.get(timestamp);
+      if (!userSet) {
+        userSet = new Set<string>();
+        groupedByTime.set(timestamp, userSet);
       }
 
       chartData.forEach((data) => {
-        // Extract userId from the label (which is the userId)
         const userId = data.label;
         if (userId) {
-          groupedByTime.get(timestamp)!.add(userId);
+          userSet.add(userId);
         }
       });
     });
@@ -177,14 +180,13 @@ export function DistinctUserCountWidget({
 
         {/* Time series chart */}
         {hasData ? (
-          <BaseTimeSeriesChart
-            agg={agg}
-            data={timeSeriesData}
-            showLegend={false}
-            connectNulls={true}
-            valueFormatter={compactNumberFormatter}
-            chartType="line"
-          />
+          <div className="h-80 w-full shrink-0">
+            <LineChartTimeSeries
+              data={timeSeriesToDataPoints(timeSeriesData, agg)}
+              valueFormatter={compactNumberFormatter}
+              legendPosition="none"
+            />
+          </div>
         ) : (
           <NoDataOrLoading
             isLoading={isLoading || timeSeriesQuery.isLoading}

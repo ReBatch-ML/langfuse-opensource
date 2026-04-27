@@ -118,6 +118,7 @@ export const ROUTES: Route[] = [
     group: RouteGroup.Observability,
     section: RouteSection.Main,
     pathname: `/project/[projectId]/sessions`,
+    show: () => false,
   },
   {
     title: "Users",
@@ -248,6 +249,7 @@ export const ROUTES: Route[] = [
     section: RouteSection.Secondary,
     pathname: "",
     menuNode: <BookACallButton />,
+    show: () => false,
   },
   {
     title: "Support",
