@@ -44,6 +44,7 @@ export const isTimeSeriesChart = (
 ): boolean => {
   switch (chartType) {
     case "LINE_TIME_SERIES":
+    case "AREA_TIME_SERIES":
     case "BAR_TIME_SERIES":
       return true;
     case "HORIZONTAL_BAR":
@@ -51,6 +52,7 @@ export const isTimeSeriesChart = (
     case "PIE":
     case "HISTOGRAM":
     case "NUMBER":
+    case "PIVOT_TABLE":
       return false;
     default:
       return false;
@@ -60,3 +62,33 @@ export const isTimeSeriesChart = (
 // Used for a combination of YAxis styling workarounds as discussed in https://github.com/recharts/recharts/issues/2027#issuecomment-769674096.
 export const formatAxisLabel = (label: string): string =>
   label.length > 13 ? label.slice(0, 13).concat("…") : label;
+
+/**
+ * Maps chart types to their human-readable display names.
+ */
+export function getChartTypeDisplayName(
+  chartType: DashboardWidgetChartType,
+): string {
+  switch (chartType) {
+    case "LINE_TIME_SERIES":
+      return "Line Chart (Time Series)";
+    case "AREA_TIME_SERIES":
+      return "Area Chart (Time Series)";
+    case "BAR_TIME_SERIES":
+      return "Bar Chart (Time Series)";
+    case "HORIZONTAL_BAR":
+      return "Horizontal Bar Chart (Total Value)";
+    case "VERTICAL_BAR":
+      return "Vertical Bar Chart (Total Value)";
+    case "PIE":
+      return "Pie Chart (Total Value)";
+    case "NUMBER":
+      return "Big Number (Total Value)";
+    case "HISTOGRAM":
+      return "Histogram (Total Value)";
+    case "PIVOT_TABLE":
+      return "Pivot Table (Total Value)";
+    default:
+      return "Unknown Chart Type";
+  }
+}

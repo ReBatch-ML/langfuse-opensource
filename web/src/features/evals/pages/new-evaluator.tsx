@@ -13,17 +13,31 @@ import { api } from "@/src/utils/api";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 import { getMaintainer } from "@/src/features/evals/utils/typeHelpers";
 import { MaintainerTooltip } from "@/src/features/evals/components/maintainer-tooltip";
-import { ManageDefaultEvalModel } from "@/src/features/evals/components/manage-default-eval-model";
+import { DefaultEvalModelSetup } from "@/src/features/evals/components/default-eval-model-setup";
 
 // Multi-step setup process
+// 0. Set up default model (optional, only if no default model exists): /project/:projectId/evals/new
 // 1. Select Evaluator: /project/:projectId/evals/new
 // 2. Configure Evaluator: /project/:projectId/evals/new?evaluator=:evaluatorId
 export default function NewEvaluatorPage() {
   const router = useRouter();
   const projectId = router.query.projectId as string;
   const evaluatorId = router.query.evaluator as string | undefined;
-  // starts at 1 to align with breadcrumb
-  const stepInt = !evaluatorId ? 1 : 2;
+
+  const hasDefaultModelReadAccess = useHasProjectAccess({
+    projectId,
+    scope: "evalDefaultModel:read",
+  });
+
+  const { data: defaultModel } = api.defaultLlmModel.fetchDefaultModel.useQuery(
+    { projectId },
+    { enabled: hasDefaultModelReadAccess && !!projectId },
+  );
+
+  const hasDefaultModel = !!defaultModel;
+
+  // Calculate step number: if no default model, start at 0, otherwise start at 1
+  const stepInt = !hasDefaultModel ? 0 : !evaluatorId ? 1 : 2;
 
   const hasAccess = useHasProjectAccess({
     projectId,
@@ -60,11 +74,29 @@ export default function NewEvaluatorPage() {
             href: `/project/${projectId}/evals`,
           },
         ],
-        actionButtonsRight: <ManageDefaultEvalModel projectId={projectId} />,
       }}
     >
       <Breadcrumb className="mb-3">
         <BreadcrumbList>
+          {!hasDefaultModel && (
+            <>
+              <BreadcrumbItem>
+                <BreadcrumbPage
+                  className={cn(
+                    stepInt !== 0
+                      ? "text-muted-foreground"
+                      : "text-foreground font-semibold",
+                  )}
+                >
+                  0. Set up default model
+                  {stepInt > 0 && (
+                    <Check className="ml-1 inline-block h-3 w-3" />
+                  )}
+                </BreadcrumbPage>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+            </>
+          )}
           <BreadcrumbItem
             className="hover:cursor-pointer"
             onClick={() => router.push(`/project/${projectId}/evals/new`)}
@@ -73,7 +105,7 @@ export default function NewEvaluatorPage() {
               className={cn(
                 stepInt !== 1
                   ? "text-muted-foreground"
-                  : "font-semibold text-foreground",
+                  : "text-foreground font-semibold",
               )}
             >
               1. Select Evaluator
@@ -86,7 +118,7 @@ export default function NewEvaluatorPage() {
               className={cn(
                 stepInt !== 2
                   ? "text-muted-foreground"
-                  : "font-semibold text-foreground",
+                  : "text-foreground font-semibold",
               )}
             >
               <div className="flex flex-row">
@@ -107,7 +139,13 @@ export default function NewEvaluatorPage() {
         </BreadcrumbList>
       </Breadcrumb>
       {
-        // 1. Create Org
+        // 0. Set up default model
+        stepInt === 0 && projectId && (
+          <DefaultEvalModelSetup projectId={projectId} />
+        )
+      }
+      {
+        // 1. Select Evaluator
         stepInt === 1 && projectId && (
           <SelectEvaluatorList projectId={projectId} />
         )

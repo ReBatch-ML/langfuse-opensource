@@ -1,12 +1,14 @@
+import { type PreviewData } from "@/src/features/evals/hooks/usePreviewData";
 import { type VariableMapping } from "@/src/features/evals/utils/evaluator-form-utils";
 import { api } from "@/src/utils/api";
-import { extractValueFromObject } from "@langfuse/shared";
+import { showErrorToast } from "@/src/features/notifications/showErrorToast";
+import { EvalTargetObject, extractValueFromObject } from "@langfuse/shared";
 import { useEffect, useState, useRef } from "react";
 
 /**
  * Helper function to find an observation by name in the trace data
  */
-function getObservation(
+function getObservationByName(
   objectName: string | null | undefined,
   observations: Record<string, unknown>[] | undefined,
 ): Record<string, unknown> | null {
@@ -21,17 +23,19 @@ type ExtractedVariable = {
   value: unknown;
 };
 
+type ExtractionError =
+  | { kind: "jsonPath"; message: string }
+  | { kind: "unexpected"; message: string };
+
 export function useExtractVariables({
   variables,
   variableMapping,
-  trace,
+  previewData,
   isLoading,
 }: {
   variables: string[];
   variableMapping: VariableMapping[];
-  trace?: Record<string, unknown> & {
-    observations?: Record<string, unknown>[];
-  };
+  previewData: PreviewData;
   isLoading: boolean;
 }) {
   const utils = api.useUtils();
@@ -39,33 +43,52 @@ export function useExtractVariables({
     ExtractedVariable[]
   >([]);
   const [isExtracting, setIsExtracting] = useState(false);
+  const [extractionError, setExtractionError] =
+    useState<ExtractionError | null>(null);
   const previousMappingRef = useRef<string>("");
 
   // Create a stable string representation of the current mapping for comparison
-  const currentMappingString = JSON.stringify(variableMapping);
+  const currentMappingString =
+    variables.length > 0 ? JSON.stringify(variableMapping) : "";
 
-  // Create a stable reference to the trace ID
-  const traceId = trace?.id;
-  const traceIdRef = useRef<string | undefined>(traceId as string | undefined);
+  const id =
+    previewData.type === EvalTargetObject.EVENT
+      ? previewData.observationId
+      : previewData.traceId;
+  const idRef = useRef<string | undefined>(id);
+
+  // Handle error toasts separately to avoid repeated toasts on re-renders
+  useEffect(() => {
+    if (!extractionError) return;
+    const title =
+      extractionError.kind === "jsonPath"
+        ? "Invalid JSONPath in variable mapping"
+        : "Failed to extract variable";
+    showErrorToast(title, extractionError.message, "WARNING");
+  }, [extractionError]);
 
   useEffect(() => {
     // Return early conditions
-    if (isLoading || !variables.length) {
-      setExtractedVariables(
-        variables.map((variable) => ({ variable, value: "n/a" })),
-      );
+    if (isLoading) {
+      setExtractedVariables([]);
+      return;
+    }
+
+    // If no variables, only update if current state is not empty
+    if (!Boolean(variables.length)) {
+      setExtractedVariables((prev) => (prev.length === 0 ? prev : []));
       return;
     }
 
     // Check if the variableMapping has changed by comparing string representations
-    // OR if the trace ID has changed
+    // OR if the target ID has changed
     const mappingChanged = previousMappingRef.current !== currentMappingString;
-    const traceChanged = traceIdRef.current !== traceId;
-    const shouldExtract = mappingChanged || traceChanged;
+    const idChanged = idRef.current !== id;
+    const shouldExtract = mappingChanged || idChanged;
 
-    // Update the trace ID reference
-    if (traceChanged) {
-      traceIdRef.current = traceId as string | undefined;
+    // Update the id reference
+    if (idChanged) {
+      idRef.current = id;
     }
 
     // Exit if we don't need to extract
@@ -73,15 +96,16 @@ export function useExtractVariables({
       return;
     }
 
-    // Clear existing variables immediately when trace changes to avoid showing stale data
-    if (traceChanged) {
+    // Clear existing variables immediately when id changes to avoid showing stale data
+    if (idChanged) {
       setExtractedVariables(
         variables.map((variable) => ({ variable, value: "n/a" })),
       );
     }
 
-    // Set loading state
+    // Set loading state and clear previous errors
     setIsExtracting(true);
+    setExtractionError(null);
 
     // Process all variables and collect promises
     const extractPromises = variables.map(async (variable) => {
@@ -89,32 +113,43 @@ export function useExtractVariables({
         (m) => m.templateVariable === variable,
       );
 
-      if (!mapping || !mapping.selectedColumnId) {
+      if (
+        !mapping ||
+        !mapping.selectedColumnId ||
+        (!mapping.langfuseObject && !(previewData.type === "event"))
+      ) {
         return { variable, value: "n/a" };
       }
 
       let object;
-      if (mapping.langfuseObject === "trace") {
-        object = trace;
-      } else if (mapping.objectName) {
-        // For observations, find them in the pre-loaded trace data
-        const observation = getObservation(
-          mapping.objectName,
-          trace?.observations,
-        );
 
-        if (observation?.id) {
-          try {
-            const observationWithInputAndOutput =
-              await utils.observations.byId.fetch({
-                observationId: observation.id as string,
-                startTime: observation.startTime as Date | null,
-                traceId: trace?.id as string,
-                projectId: trace?.projectId as string,
-              });
-            object = observationWithInputAndOutput;
-          } catch (error) {
-            console.error(`Error fetching observation data:`, error);
+      if (previewData.type === "event") {
+        object = previewData.data; // Already has input/output
+      } else {
+        // Trace eval: can map to trace or observation fields
+        if (mapping.langfuseObject === "trace") {
+          object = previewData.data;
+        } else if (mapping.langfuseObject !== "dataset_item") {
+          // Find observation by name from mapping
+          const observation = getObservationByName(
+            mapping.objectName,
+            previewData.data.observations as Record<string, unknown>[],
+          );
+
+          if (observation?.id) {
+            try {
+              // Fetch observation to get input/output
+              const observationWithInputAndOutput =
+                await utils.observations.byId.fetch({
+                  observationId: observation.id as string,
+                  startTime: observation.startTime as Date | null,
+                  traceId: previewData.data.id as string,
+                  projectId: previewData.data.projectId as string,
+                });
+              object = observationWithInputAndOutput;
+            } catch (error) {
+              console.error(`Error fetching observation data:`, error);
+            }
           }
         }
       }
@@ -123,30 +158,42 @@ export function useExtractVariables({
         return { variable, value: "n/a" };
       }
 
-      try {
-        const result = extractValueFromObject(object, {
-          ...mapping,
-          selectedColumnId: mapping.selectedColumnId,
-        });
-        return { variable, value: result };
-      } catch (error) {
-        console.error(
-          `Error extracting value for variable ${variable}:`,
-          error,
-        );
-        return { variable, value: "" };
-      }
+      const { value, error } = extractValueFromObject(
+        object,
+        mapping.selectedColumnId,
+        mapping.jsonSelector ?? undefined,
+      );
+      return {
+        variable,
+        value,
+        error,
+        jsonSelector: mapping.jsonSelector ?? null,
+      };
     });
 
     // Resolve all promises and update state
     Promise.all(extractPromises)
       .then((results) => {
+        const firstError = results.find(
+          (result) => result.error instanceof Error,
+        );
+        if (firstError) {
+          const baseMessage = (firstError.error as Error).message;
+          const message = firstError.jsonSelector
+            ? `${firstError.jsonSelector}: ${baseMessage}`
+            : baseMessage;
+          setExtractionError({ kind: "jsonPath", message });
+        }
         setExtractedVariables(results);
         // Update the ref to the current mapping string to track changes
         previousMappingRef.current = currentMappingString;
       })
       .catch((error) => {
         console.error("Error extracting variables:", error);
+        setExtractionError({
+          kind: "unexpected",
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
         setExtractedVariables(
           variables.map((variable) => ({
             variable,
@@ -163,9 +210,9 @@ export function useExtractVariables({
     variableMapping,
     currentMappingString,
     isLoading,
-    traceId,
+    id,
     utils.observations.byId,
-    trace,
+    previewData,
   ]);
 
   return { extractedVariables, isExtracting };

@@ -2,7 +2,7 @@ import { ApiAuthService } from "@/src/features/public-api/server/apiAuth";
 import { cors, runMiddleware } from "@/src/features/public-api/server/cors";
 import { prisma } from "@langfuse/shared/src/db";
 import { logger, redis } from "@langfuse/shared/src/server";
-import { handleCreateProject } from "@/src/features/admin-api/projects/createProject";
+import { handleCreateProject } from "@/src/ee/features/admin-api/server/projects/createProject";
 import { type NextApiRequest, type NextApiResponse } from "next";
 import { hasEntitlementBasedOnPlan } from "@/src/features/entitlements/server/hasEntitlement";
 
@@ -50,10 +50,16 @@ export default async function handler(
           name: true,
           retentionDays: true,
           metadata: true,
+          organization: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
         },
         where: {
           id: authCheck.scope.projectId,
-          // deletedAt: null, // here we want to include deleted projects and grey them in the UI.
+          deletedAt: null,
         },
       });
 
@@ -61,6 +67,10 @@ export default async function handler(
         data: projects.map((project) => ({
           id: project.id,
           name: project.name,
+          organization: {
+            id: project.organization.id,
+            name: project.organization.name,
+          },
           metadata: project.metadata ?? {},
           ...(project.retentionDays // Do not add if null or 0
             ? { retentionDays: project.retentionDays }

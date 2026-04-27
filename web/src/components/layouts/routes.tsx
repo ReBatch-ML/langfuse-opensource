@@ -15,17 +15,34 @@ import {
   FileJson,
   Search,
   Home,
+  SquarePercent,
+  ClipboardPen,
+  Clock,
+  Beaker,
 } from "lucide-react";
 import { type ReactNode } from "react";
 import { type Entitlement } from "@/src/features/entitlements/constants/entitlements";
 import { type User } from "next-auth";
 import { type OrganizationScope } from "@/src/features/rbac/constants/organizationAccessRights";
-import { SupportMenuDropdown } from "@/src/components/nav/support-menu-dropdown";
+import { SupportButton } from "@/src/components/nav/support-button";
+import { BookACallButton } from "@/src/components/nav/book-a-call-button";
+import { V4SidebarToggle } from "@/src/features/events/components/V4SidebarToggle";
 import { SidebarMenuButton } from "@/src/components/ui/sidebar";
 import { useCommandMenu } from "@/src/features/command-k-menu/CommandMenuProvider";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import { CloudStatusMenu } from "@/src/features/cloud-status-notification/components/CloudStatusMenu";
 import { type ProductModule } from "@/src/ee/features/ui-customization/productModuleSchema";
+
+export enum RouteSection {
+  Main = "main",
+  Secondary = "secondary",
+}
+
+export enum RouteGroup {
+  Observability = "Observability",
+  PromptManagement = "Prompt Management",
+  Evaluation = "Evaluation",
+}
 
 export type Route = {
   title: string;
@@ -37,14 +54,14 @@ export type Route = {
   icon?: LucideIcon; // ignored for nested routes
   pathname: string; // link
   items?: Array<Route>; // folder
-  bottom?: boolean; // bottom of the sidebar, only for first level routes
+  section?: RouteSection; // which section of the sidebar (top/main/bottom)
   newTab?: boolean; // open in new tab
   entitlements?: Entitlement[]; // entitlements required, array treated as OR
   productModule?: ProductModule; // Product module this route belongs to. Used to show/hide modules via ui customization.
   show?: (p: {
     organization: User["organizations"][number] | undefined;
   }) => boolean;
-  
+  group?: RouteGroup; // group this route belongs to (within a section)
 };
 
 export const ROUTES: Route[] = [
@@ -53,85 +70,62 @@ export const ROUTES: Route[] = [
     pathname: "", // Empty pathname since this is a dropdown
     icon: Search,
     menuNode: <CommandMenuTrigger />,
+    section: RouteSection.Main,
   },
   {
     title: "Organizations",
     pathname: "/",
     icon: Grid2X2,
     show: ({ organization }) => organization === undefined,
+    section: RouteSection.Main,
   },
   {
     title: "Projects",
     pathname: "/organization/[organizationId]",
     icon: Grid2X2,
+    section: RouteSection.Main,
   },
   {
     title: "Home",
     pathname: `/project/[projectId]`,
     icon: Home,
+    section: RouteSection.Main,
   },
   {
     title: "Dashboards",
     pathname: `/project/[projectId]/dashboards`,
     icon: LayoutDashboard,
     productModule: "dashboards",
+    section: RouteSection.Main,
   },
   {
     title: "Tracing",
-    pathname: `/project/[projectId]/traces`,
     icon: ListTree,
     productModule: "tracing",
+    group: RouteGroup.Observability,
+    section: RouteSection.Main,
+    pathname: `/project/[projectId]/traces`,
     show: ({ organization }) => {
       if (!organization) return false;
       if (organization.name !== "Eubelius") return false;
       return organization.role === "OWNER" || organization.role === "ADMIN";
     },
-    items: [
-      {
-        title: "Traces",
-        pathname: `/project/[projectId]/traces`,
-      },
-      {
-        title: "Sessions",
-        pathname: `/project/[projectId]/sessions`,
-      },
-      {
-        title: "Observations",
-        pathname: `/project/[projectId]/observations`,
-      },
-
-      {
-        title: "Scores",
-        pathname: `/project/[projectId]/scores`,
-        show: ({ organization }) => false,
-      },
-    ],
   },
   {
-    title: "Evaluation",
-    icon: Lightbulb,
-    pathname: `/project/[projectId]/annotation-queues`,
-    productModule: "evaluation",
-    projectRbacScopes: ["annotationQueues:read", "evalJob:read"],
-    show: ({ organization }) => false,
-    items: [
-      {
-        title: "Human Annotation",
-        pathname: `/project/[projectId]/annotation-queues`,
-        projectRbacScopes: ["annotationQueues:read"],
-      },
-      {
-        title: "LLM-as-a-Judge",
-        pathname: `/project/[projectId]/evals`,
-        projectRbacScopes: ["evalJob:read"],
-      },
-    ],
+    title: "Sessions",
+    icon: Clock,
+    productModule: "tracing",
+    group: RouteGroup.Observability,
+    section: RouteSection.Main,
+    pathname: `/project/[projectId]/sessions`,
   },
   {
     title: "Users",
     pathname: `/project/[projectId]/users`,
     icon: UsersIcon,
     productModule: "tracing",
+    group: RouteGroup.Observability,
+    section: RouteSection.Main,
     show: ({ organization }) => {
       if (!organization) return false;
       if (organization.name !== "Eubelius") return false;
@@ -144,68 +138,124 @@ export const ROUTES: Route[] = [
     icon: FileJson,
     projectRbacScopes: ["prompts:read"],
     productModule: "prompt-management",
-    show: ({ organization }) => false,
+    group: RouteGroup.PromptManagement,
+    section: RouteSection.Main,
+    show: () => false,
   },
   {
     title: "Playground",
     pathname: "/project/[projectId]/playground",
     icon: TerminalIcon,
     productModule: "playground",
-    show: ({ organization }) => false,
+    group: RouteGroup.PromptManagement,
+    section: RouteSection.Main,
+    show: () => false,
+  },
+  {
+    title: "Scores",
+    pathname: `/project/[projectId]/scores`,
+    group: RouteGroup.Evaluation,
+    section: RouteSection.Main,
+    icon: SquarePercent,
+    show: () => false,
+  },
+  {
+    title: "LLM-as-a-Judge",
+    icon: Lightbulb,
+    productModule: "evaluation",
+    projectRbacScopes: ["evalJob:read"],
+    group: RouteGroup.Evaluation,
+    section: RouteSection.Main,
+    pathname: `/project/[projectId]/evals`,
+    show: () => false,
+  },
+  {
+    title: "Human Annotation",
+    pathname: `/project/[projectId]/annotation-queues`,
+    projectRbacScopes: ["annotationQueues:read"],
+    group: RouteGroup.Evaluation,
+    section: RouteSection.Main,
+    icon: ClipboardPen,
+    show: () => false,
   },
   {
     title: "Datasets",
     pathname: `/project/[projectId]/datasets`,
     icon: Database,
     productModule: "datasets",
-    show: ({ organization }) => false,
+    group: RouteGroup.Evaluation,
+    section: RouteSection.Main,
+    show: () => false,
+  },
+  {
+    title: "Experiments",
+    pathname: `/project/[projectId]/experiments`,
+    icon: Beaker,
+    featureFlag: "experimentsV4Enabled",
+    group: RouteGroup.Evaluation,
+    section: RouteSection.Main,
+    label: "Beta",
+    show: () => false,
   },
   {
     title: "Upgrade",
     icon: Sparkle,
     pathname: "/project/[projectId]/settings/billing",
-    bottom: true,
+    section: RouteSection.Secondary,
     entitlements: ["cloud-billing"],
     organizationRbacScope: "langfuseCloudBilling:CRUD",
-    show: ({ organization }) => false,
+    show: () => false,
     // show: ({ organization }) => organization?.plan === "cloud:hobby",
   },
   {
     title: "Upgrade",
     icon: Sparkle,
     pathname: "/organization/[organizationId]/settings/billing",
-    bottom: true,
+    section: RouteSection.Secondary,
     entitlements: ["cloud-billing"],
     organizationRbacScope: "langfuseCloudBilling:CRUD",
-    show: ({ organization }) => false,
+    show: () => false,
     // show: ({ organization }) => organization?.plan === "cloud:hobby",
   },
   {
     title: "Cloud Status",
-    bottom: true,
+    section: RouteSection.Secondary,
     pathname: "",
     menuNode: <CloudStatusMenu />,
-    show: ({ organization }) => false,
+    show: () => false,
+  },
+  {
+    title: "Preview (fast)",
+    pathname: "",
+    section: RouteSection.Secondary,
+    featureFlag: "v4BetaToggleVisible",
+    menuNode: <V4SidebarToggle />,
   },
   {
     title: "Settings",
     pathname: "/project/[projectId]/settings",
     icon: Settings,
-    bottom: true,
+    section: RouteSection.Secondary,
   },
   {
     title: "Settings",
     pathname: "/organization/[organizationId]/settings",
     icon: Settings,
-    bottom: true,
+    section: RouteSection.Secondary,
+  },
+  {
+    title: "Book a call",
+    section: RouteSection.Secondary,
+    pathname: "",
+    menuNode: <BookACallButton />,
   },
   {
     title: "Support",
     icon: LifeBuoy,
-    bottom: true,
+    section: RouteSection.Secondary,
     pathname: "", // Empty pathname since this is a dropdown
-    menuNode: <SupportMenuDropdown />,
-    show: ({ organization }) => false,
+    menuNode: <SupportButton />,
+    show: () => false,
   },
 ];
 
@@ -225,7 +275,7 @@ function CommandMenuTrigger() {
     >
       <Search className="h-4 w-4" />
       Go to...
-      <kbd className="pointer-events-none ml-auto inline-flex h-5 select-none items-center gap-1 rounded-md border px-1.5 font-mono text-[10px]">
+      <kbd className="pointer-events-none ml-auto inline-flex h-5 items-center gap-1 rounded-md border px-1.5 font-mono text-[10px] select-none">
         {navigator.userAgent.includes("Mac") ? (
           <span className="text-[12px]">⌘</span>
         ) : (

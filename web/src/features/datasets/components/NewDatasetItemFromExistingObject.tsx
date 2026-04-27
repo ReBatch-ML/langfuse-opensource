@@ -17,13 +17,14 @@ import {
 } from "@/src/components/ui/dropdown-menu";
 import Link from "next/link";
 import { NewDatasetItemForm } from "@/src/features/datasets/components/NewDatasetItemForm";
-import { type Prisma } from "@langfuse/shared/src/db";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
-import { Button } from "@/src/components/ui/button";
+import { Button, type ButtonProps } from "@/src/components/ui/button";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import { useIsAuthenticatedAndProjectMember } from "@/src/features/auth/hooks";
 import { parseJsonPrioritised } from "@langfuse/shared";
 import { ActionButton } from "@/src/components/ActionButton";
+import { type MetadataDomainClient } from "@/src/utils/clientSideDomainTypes";
+import { type Prisma } from "@langfuse/shared";
 
 /**
  * Component for creating a new dataset item from an existing object.
@@ -39,20 +40,30 @@ export const NewDatasetItemFromExistingObject = (props: {
   traceId?: string;
   observationId?: string;
   fromDatasetId?: string;
-  input: string | null;
-  output: string | null;
-  metadata: Prisma.JsonValue;
+  input: Prisma.JsonValue | null;
+  output: Prisma.JsonValue | null;
+  metadata: MetadataDomainClient;
   isCopyItem?: boolean;
+  buttonVariant?: ButtonProps["variant"];
+  size?: ButtonProps["size"];
 }) => {
-  const parsedInput =
-    props.input && typeof props.input === "string"
-      ? (parseJsonPrioritised(props.input) ?? null)
-      : null;
+  const normalizePrefillValue = (
+    value: Prisma.JsonValue | null,
+  ): Prisma.JsonValue | null => {
+    if (value === null || value === undefined) {
+      return null;
+    }
 
-  const parsedOutput =
-    props.output && typeof props.output === "string"
-      ? (parseJsonPrioritised(props.output) ?? null)
-      : null;
+    if (typeof value === "string") {
+      const parsed = parseJsonPrioritised(value);
+      return parsed !== undefined ? parsed : value;
+    }
+
+    return value;
+  };
+
+  const parsedInput = normalizePrefillValue(props.input);
+  const parsedOutput = normalizePrefillValue(props.output);
 
   const [isFormOpen, setIsFormOpen] = useState(false);
   const isAuthenticatedAndProjectMember = useIsAuthenticatedAndProjectMember(
@@ -74,13 +85,15 @@ export const NewDatasetItemFromExistingObject = (props: {
     scope: "datasets:CUD",
   });
   const capture = usePostHogClientCapture();
+  const buttonVariant = props.buttonVariant || "secondary";
+  const buttonSize = props.size || "default";
 
   return (
     <>
       {props.isCopyItem ? (
         <ActionButton
           variant="outline"
-          size="icon"
+          size={buttonSize === "sm" ? "icon-xs" : "icon"}
           hasAccess={hasAccess}
           title="Copy item"
           aria-label="Copy item"
@@ -95,23 +108,27 @@ export const NewDatasetItemFromExistingObject = (props: {
         <div>
           <DropdownMenu open={hasAccess ? undefined : false}>
             <DropdownMenuTrigger asChild>
-              <Button variant="secondary" disabled={!hasAccess}>
+              <Button
+                variant="secondary"
+                size={buttonSize}
+                disabled={!hasAccess}
+              >
                 <span>{`In ${observationInDatasets.data.length} dataset(s)`}</span>
                 <ChevronDown className="ml-2 h-3 w-3" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               {observationInDatasets.data.map(
-                ({ id: datasetItemId, dataset }) => (
+                ({ id: datasetItemId, datasetName, datasetId }) => (
                   <DropdownMenuItem
                     key={datasetItemId}
                     className="capitalize"
                     asChild
                   >
                     <Link
-                      href={`/project/${props.projectId}/datasets/${dataset.id}/items/${datasetItemId}`}
+                      href={`/project/${props.projectId}/datasets/${datasetId}/items/${datasetItemId}`}
                     >
-                      {dataset.name}
+                      {datasetName}
                     </Link>
                   </DropdownMenuItem>
                 ),
@@ -137,12 +154,16 @@ export const NewDatasetItemFromExistingObject = (props: {
               object: props.observationId ? "observation" : "trace",
             });
           }}
-          variant="secondary"
+          variant={buttonVariant}
+          size={buttonSize}
           disabled={!hasAccess}
         >
           {hasAccess ? (
             <PlusIcon
-              className={cn("-ml-0.5 mr-1.5 h-4 w-4")}
+              className={cn(
+                "mr-1.5 -ml-0.5",
+                buttonSize === "sm" ? "h-3.5 w-3.5" : "h-4 w-4",
+              )}
               aria-hidden="true"
             />
           ) : null}
@@ -155,21 +176,21 @@ export const NewDatasetItemFromExistingObject = (props: {
       <Dialog open={hasAccess && isFormOpen} onOpenChange={setIsFormOpen}>
         <DialogContent className="h-[calc(100vh-5rem)] max-h-none w-[calc(100vw-5rem)] max-w-none">
           <DialogHeader>
-            <DialogTitle>Add to datasets</DialogTitle>
+            <DialogTitle>Add item to datasets</DialogTitle>
           </DialogHeader>
-          <NewDatasetItemForm
-            traceId={props.traceId}
-            observationId={props.observationId}
-            projectId={props.projectId}
-            input={parsedInput}
-            output={parsedOutput}
-            metadata={props.metadata}
-            onFormSuccess={() => setIsFormOpen(false)}
-            className="h-full overflow-y-auto"
-            blockedDatasetIds={
-              props.fromDatasetId ? [props.fromDatasetId] : undefined
-            }
-          />
+          {isFormOpen && (
+            <NewDatasetItemForm
+              traceId={props.traceId}
+              observationId={props.observationId}
+              projectId={props.projectId}
+              input={parsedInput}
+              output={parsedOutput}
+              metadata={props.metadata}
+              onFormSuccess={() => setIsFormOpen(false)}
+              className="h-full overflow-y-auto"
+              currentDatasetId={props.fromDatasetId}
+            />
+          )}
         </DialogContent>
       </Dialog>
     </>

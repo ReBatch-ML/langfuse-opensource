@@ -1,5 +1,10 @@
 import { type EvalTemplate } from "@langfuse/shared";
-import { AlertCircle, CheckIcon, ExternalLink } from "lucide-react";
+import {
+  AlertCircle,
+  CheckIcon,
+  ExternalLink,
+  ExternalLinkIcon,
+} from "lucide-react";
 import {
   InputCommand,
   InputCommandEmpty,
@@ -57,6 +62,12 @@ export function EvaluatorSelector({
       custom: {} as Record<string, EvalTemplate[]>,
     },
   );
+
+  // Ensure per-name arrays are sorted by createdAt ascending so last is latest
+  const sortByCreatedAt = (arr: EvalTemplate[]) =>
+    arr.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  Object.values(groupedTemplates.custom).forEach(sortByCreatedAt);
+  Object.values(groupedTemplates.langfuse).forEach(sortByCreatedAt);
 
   // Filter templates based on search
   const filteredTemplates = {
@@ -126,14 +137,36 @@ export function EvaluatorSelector({
                         "bg-secondary",
                     )}
                   >
-                    {name}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span>{name}</span>
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side="right"
+                        className="max-h-[300px] max-w-[400px] overflow-y-auto"
+                      >
+                        <p className="mb-1 font-medium">Evaluation prompt</p>
+                        <pre className="text-muted-foreground text-xs wrap-break-word whitespace-pre-wrap">
+                          {latestVersion.prompt}
+                        </pre>
+                      </TooltipContent>
+                    </Tooltip>
                     {isInvalid && (
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <AlertCircle className="ml-1 h-4 w-4 text-yellow-500" />
                         </TooltipTrigger>
-                        <TooltipContent>
-                          Requires project-level evaluation model
+                        <TooltipContent className="max-h-[50dvh] overflow-y-auto text-sm break-normal whitespace-normal">
+                          <p>Requires project-level evaluation model</p>
+                          <Link
+                            href={`/project/${projectId}/evals/default-model`}
+                            className="mt-2 flex items-center gap-1 text-blue-600 hover:underline"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            <ExternalLinkIcon className="h-3 w-3" />
+                            Configure default model
+                          </Link>
                         </TooltipContent>
                       </Tooltip>
                     )}
@@ -142,7 +175,7 @@ export function EvaluatorSelector({
                         <Link
                           href={`/project/${projectId}/evals/templates/${latestVersion.id}`}
                           target="_blank"
-                          className="ml-auto opacity-0 hover:opacity-100 group-hover:opacity-100"
+                          className="ml-auto opacity-0 group-hover:opacity-100 hover:opacity-100"
                           onClick={(e) => {
                             e.stopPropagation();
                           }}
@@ -155,7 +188,7 @@ export function EvaluatorSelector({
                       <Link
                         href={`/project/${projectId}/evals/templates/${latestVersion.id}`}
                         target="_blank"
-                        className="ml-auto opacity-0 hover:opacity-100 group-hover:opacity-100"
+                        className="ml-auto opacity-0 group-hover:opacity-100 hover:opacity-100"
                         onClick={(e) => {
                           e.stopPropagation();
                         }}
@@ -195,7 +228,20 @@ export function EvaluatorSelector({
                         "bg-secondary",
                     )}
                   >
-                    <div className="mr-1">{name}</div>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="mr-1">{name}</div>
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side="right"
+                        className="max-h-[300px] max-w-[400px] overflow-y-auto"
+                      >
+                        <p className="mb-1 font-medium">Evaluation prompt</p>
+                        <pre className="text-muted-foreground text-xs wrap-break-word whitespace-pre-wrap">
+                          {latestVersion.prompt}
+                        </pre>
+                      </TooltipContent>
+                    </Tooltip>
                     <MaintainerTooltip
                       maintainer={getMaintainer(latestVersion)}
                     />
@@ -204,8 +250,17 @@ export function EvaluatorSelector({
                         <TooltipTrigger asChild>
                           <AlertCircle className="ml-1 h-4 w-4 text-yellow-500" />
                         </TooltipTrigger>
-                        <TooltipContent>
-                          Requires project-level evaluation model
+                        <TooltipContent className="max-h-[50dvh] overflow-y-auto text-sm break-normal whitespace-normal">
+                          <p>Requires project-level evaluation model</p>
+                          <Link
+                            href={`/project/${projectId}/evals/default-model`}
+                            className="mt-2 flex items-center gap-1 text-blue-600 hover:underline"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            <ExternalLinkIcon className="h-3 w-3" />
+                            Configure default model
+                          </Link>
                         </TooltipContent>
                       </Tooltip>
                     )}
@@ -214,7 +269,7 @@ export function EvaluatorSelector({
                         <Link
                           href={`/project/${projectId}/evals/templates/${latestVersion.id}`}
                           target="_blank"
-                          className="ml-auto opacity-0 hover:opacity-100 group-hover:opacity-100"
+                          className="ml-auto opacity-0 group-hover:opacity-100 hover:opacity-100"
                           onClick={(e) => {
                             e.stopPropagation();
                           }}
@@ -227,7 +282,7 @@ export function EvaluatorSelector({
                       <Link
                         href={`/project/${projectId}/evals/templates/${latestVersion.id}`}
                         target="_blank"
-                        className="ml-auto opacity-0 hover:opacity-100 group-hover:opacity-100"
+                        className="ml-auto opacity-0 group-hover:opacity-100 hover:opacity-100"
                         onClick={(e) => {
                           e.stopPropagation();
                         }}

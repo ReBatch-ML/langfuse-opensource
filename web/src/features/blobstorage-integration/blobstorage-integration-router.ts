@@ -6,8 +6,9 @@ import {
   createTRPCRouter,
   protectedProjectProcedure,
 } from "@/src/server/api/trpc";
-import { encrypt } from "@langfuse/shared/encryption";
-import { blobStorageIntegrationFormSchema } from "@/src/features/blobstorage-integration/types";
+import { blobStorageIntegrationFormSchemaBase } from "@/src/features/blobstorage-integration/types";
+import { validateAzureContainerName } from "@/src/features/blobstorage-integration/validation";
+import { upsertBlobStorageIntegration } from "@/src/features/blobstorage-integration/service";
 import { TRPCError } from "@trpc/server";
 import {
   logger,
@@ -18,10 +19,9 @@ import {
 import { randomUUID } from "crypto";
 import { decrypt } from "@langfuse/shared/encryption";
 import {
-  type BlobStorageIntegration,
   BlobStorageIntegrationType,
+  InvalidRequestError,
 } from "@langfuse/shared";
-import { env } from "@/src/env.mjs";
 
 export const blobStorageIntegrationRouter = createTRPCRouter({
   get: protectedProjectProcedure
@@ -57,7 +57,11 @@ export const blobStorageIntegrationRouter = createTRPCRouter({
     }),
 
   update: protectedProjectProcedure
-    .input(blobStorageIntegrationFormSchema.extend({ projectId: z.string() }))
+    .input(
+      blobStorageIntegrationFormSchemaBase
+        .extend({ projectId: z.string() })
+        .superRefine(validateAzureContainerName),
+    )
     .mutation(async ({ input, ctx }) => {
       try {
         throwIfNoProjectAccess({
@@ -72,94 +76,38 @@ export const blobStorageIntegrationRouter = createTRPCRouter({
           resourceId: input.projectId,
         });
 
-        // Extract data from input
-        const {
-          accessKeyId,
-          secretAccessKey,
-          type,
-          bucketName,
-          endpoint,
-          region,
-          prefix,
-          exportFrequency,
-          enabled,
-          forcePathStyle,
-          fileType,
-        } = input;
+        const { projectId, ...rest } = input;
 
-        const isSelfHosted = !env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION;
-        const canUseHostCredentials =
-          isSelfHosted && type === BlobStorageIntegrationType.S3;
-        const isUsingHostCredentials =
-          canUseHostCredentials && (!accessKeyId || !secretAccessKey);
-
-        if (!canUseHostCredentials && !accessKeyId) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "Access Key ID and Secret Access Key are required",
-          });
-        }
-
-        const data: Partial<BlobStorageIntegration> = {
-          type,
-          bucketName,
-          endpoint: endpoint || null,
-          region,
-          prefix: prefix ?? "",
-          exportFrequency,
-          enabled,
-          accessKeyId,
-          forcePathStyle: forcePathStyle || false,
-          fileType,
-        };
-
-        // Use a transaction to check if record exists, then create or update
-        return await ctx.prisma.$transaction(async (prisma) => {
-          // Check if a record exists for this project
-          const existingConfig = await prisma.blobStorageIntegration.findUnique(
-            {
-              where: {
-                projectId: input.projectId,
-              },
-            },
-          );
-
-          if (existingConfig) {
-            if (secretAccessKey) {
-              data.secretAccessKey = encrypt(secretAccessKey);
-            }
-
-            return await prisma.blobStorageIntegration.update({
-              where: {
-                projectId: input.projectId,
-              },
-              data,
-            });
-          } else {
-            // Record doesn't exist, perform create
-            if (!isUsingHostCredentials && !secretAccessKey) {
-              throw new TRPCError({
-                code: "BAD_REQUEST",
-                message:
-                  "Secret access key is required for new configuration when not using host credentials",
-              });
-            }
-
-            return await prisma.blobStorageIntegration.create({
-              data: {
-                ...(data as BlobStorageIntegration),
-                projectId: input.projectId,
-                accessKeyId,
-                secretAccessKey: secretAccessKey
-                  ? encrypt(secretAccessKey)
-                  : undefined,
-              },
-            });
-          }
+        return await upsertBlobStorageIntegration({
+          prisma: ctx.prisma,
+          projectId,
+          data: {
+            type: rest.type,
+            bucketName: rest.bucketName,
+            endpoint: rest.endpoint || null,
+            region: rest.region,
+            accessKeyId: rest.accessKeyId ?? null,
+            secretAccessKey: rest.secretAccessKey ?? null,
+            prefix: rest.prefix ?? "",
+            exportFrequency: rest.exportFrequency,
+            enabled: rest.enabled,
+            forcePathStyle: rest.forcePathStyle,
+            fileType: rest.fileType,
+            exportMode: rest.exportMode,
+            exportStartDate: rest.exportStartDate ?? null,
+            exportSource: rest.exportSource,
+            compressed: rest.compressed,
+          },
         });
       } catch (e) {
         if (e instanceof TRPCError) {
           throw e;
+        }
+        if (e instanceof InvalidRequestError) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: e.message,
+          });
         }
         logger.error(`Failed to update blob storage integration`, e);
         throw new TRPCError({
@@ -326,6 +274,7 @@ export const blobStorageIntegrationRouter = createTRPCRouter({
           forcePathStyle: forcePathStyle || false,
           useAzureBlob: type === BlobStorageIntegrationType.AZURE_BLOB_STORAGE,
           useGoogleCloudStorage: false, // Not supported in blob storage integration
+          useOCIObjectStorage: false, // Not supported in blob storage integration
           googleCloudCredentials: undefined,
           awsSse: undefined,
           awsSseKmsKeyId: undefined,
@@ -342,7 +291,7 @@ Configuration: ${type} storage
 This file can be safely deleted.`;
 
         // Upload the test file
-        const result = await storageService.uploadFile({
+        const result = await storageService.uploadWithSignedUrl({
           fileName: testFileName,
           fileType: "text/plain",
           data: testContent,

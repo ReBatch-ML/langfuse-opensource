@@ -2,30 +2,39 @@ import { StatusBadge } from "@/src/components/layouts/status-badge";
 import { LevelCountsDisplay } from "@/src/components/level-counts-display";
 import { DataTable } from "@/src/components/table/data-table";
 import { DataTableToolbar } from "@/src/components/table/data-table-toolbar";
+import {
+  DataTableControlsProvider,
+  DataTableControls,
+} from "@/src/components/table/data-table-controls";
+import { ResizableFilterLayout } from "@/src/components/table/resizable-filter-layout";
 import { type LangfuseColumnDef } from "@/src/components/table/types";
 import useColumnVisibility from "@/src/features/column-visibility/hooks/useColumnVisibility";
 import { InlineFilterState } from "@/src/features/filters/components/filter-builder";
 import { useDetailPageLists } from "@/src/features/navigate-detail-pages/context";
-import { useQueryFilterState } from "@/src/features/filters/hooks/useFilterState";
-import { type RouterOutputs, api } from "@/src/utils/api";
-import { type FilterState, singleFilter } from "@langfuse/shared";
+import { useSidebarFilterState } from "@/src/features/filters/hooks/useSidebarFilterState";
+import { evaluatorFilterConfig } from "@/src/features/filters/config/evaluators-config";
+import { api } from "@/src/utils/api";
 import { createColumnHelper } from "@tanstack/react-table";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
+import { useQueryParam, StringParam, withDefault } from "use-query-params";
+import { usePaginationState } from "@/src/hooks/usePaginationState";
 import {
-  useQueryParams,
-  withDefault,
-  NumberParam,
-  useQueryParam,
-  StringParam,
-} from "use-query-params";
-import { z } from "zod";
-import { generateJobExecutionCounts } from "@/src/features/evals/utils/job-execution-utils";
+  isLegacyEvalTarget,
+  isEventTarget,
+} from "@/src/features/evals/utils/typeHelpers";
 import { useOrderByState } from "@/src/features/orderBy/hooks/useOrderByState";
 import TableIdOrName from "@/src/components/table/table-id";
-import { MoreVertical, Loader2, ExternalLinkIcon, Edit } from "lucide-react";
-import { usePeekState } from "@/src/components/table/peek/hooks/usePeekState";
-import { useRunningEvaluatorsPeekNavigation } from "@/src/components/table/peek/hooks/useRunningEvaluatorsPeekNavigation";
+import {
+  MoreVertical,
+  Loader2,
+  ExternalLinkIcon,
+  Edit,
+  Info,
+} from "lucide-react";
+import { usePeekNavigation } from "@/src/components/table/peek/hooks/usePeekNavigation";
 import { PeekViewEvaluatorConfigDetail } from "@/src/components/table/peek/peek-evaluator-config-detail";
+import { TablePeekView } from "@/src/components/table/peek";
+import { evalConfigTargetValues } from "@/src/server/api/definitions/evalConfigsTable";
 import {
   DropdownMenu,
   DropdownMenuItem,
@@ -44,40 +53,69 @@ import {
 import { EvaluatorForm } from "@/src/features/evals/components/evaluator-form";
 import { useRouter } from "next/router";
 import { DeleteEvalConfigButton } from "@/src/components/deleteButton";
-import { evalConfigFilterColumns } from "@/src/server/api/definitions/evalConfigsTable";
-import { RAGAS_TEMPLATE_PREFIX } from "@/src/features/evals/types";
 import { MaintainerTooltip } from "@/src/features/evals/components/maintainer-tooltip";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
+import { Skeleton } from "@/src/components/ui/skeleton";
+import { usdFormatter } from "@/src/utils/numbers";
+import { Callout } from "@/src/components/ui/callout";
+import Link from "next/link";
+import { Badge } from "@/src/components/ui/badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/src/components/ui/tooltip";
+import {
+  type EvaluatorDataRow,
+  useEvaluatorTableData,
+} from "@/src/features/evals/hooks/useEvaluatorTableData";
 
-export type EvaluatorDataRow = {
-  id: string;
-  status: string;
-  createdAt: string;
-  updatedAt: string;
-  maintainer: string;
-  template?: {
-    id: string;
-    name: string;
-    version: number;
-  };
-  scoreName: string;
-  target: string; // "trace" or "dataset"
-  filter: FilterState;
-  result: {
-    level: string;
-    count: number;
-    symbol: string;
-  }[];
-  logs?: string;
-  actions?: string;
-};
+function LegacyBadgeCell({ status }: { status: string }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <Badge variant="warning">
+        Legacy
+        {status === "ACTIVE" && (
+          <Tooltip>
+            <TooltipTrigger>
+              <Info className="text-dark-yellow ml-1 h-3.5 w-3.5" />
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[280px]">
+              <div className="space-y-1 text-sm">
+                <p className="font-medium">Action required</p>
+                <p className="text-muted-foreground">
+                  This evaluator requires changes to benefit from new features
+                  and performance improvements. Please follow{" "}
+                  <Link
+                    href="https://langfuse.com/faq/all/llm-as-a-judge-migration"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-dark-blue font-medium hover:opacity-80"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                    }}
+                  >
+                    this guide
+                  </Link>{" "}
+                  to upgrade to the new version. <br /> <br /> If you do not
+                  upgrade, your evaluator will continue to run, but you will not
+                  benefit from improvements.
+                </p>
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </Badge>
+    </div>
+  );
+}
 
 export default function EvaluatorTable({ projectId }: { projectId: string }) {
   const router = useRouter();
   const { setDetailPageList } = useDetailPageLists();
-  const [paginationState, setPaginationState] = useQueryParams({
-    pageIndex: withDefault(NumberParam, 0),
-    pageSize: withDefault(NumberParam, 50),
+  const [paginationState, setPaginationState] = usePaginationState(0, 50, {
+    page: "pageIndex",
+    limit: "pageSize",
   });
   const [searchQuery, setSearchQuery] = useQueryParam(
     "search",
@@ -86,26 +124,35 @@ export default function EvaluatorTable({ projectId }: { projectId: string }) {
   const [editConfigId, setEditConfigId] = useState<string | null>(null);
   const utils = api.useUtils();
 
-  const [filterState, setFilterState] = useQueryFilterState(
-    [],
-    "eval_configs",
-    projectId,
+  const [orderByState, setOrderByState] = useOrderByState({
+    column: "status",
+    order: "ASC",
+  });
+
+  const newFilterOptions = {
+    status: ["ACTIVE", "PAUSED", "INACTIVE"],
+    target: evalConfigTargetValues,
+  };
+
+  const queryFilter = useSidebarFilterState(
+    evaluatorFilterConfig,
+    newFilterOptions,
+    {
+      loading: false,
+      stateLocation: "urlAndSessionStorage",
+      sessionFilterContextId: projectId,
+    },
   );
 
-  const [orderByState, setOrderByState] = useOrderByState({
-    column: "createdAt",
-    order: "DESC",
-  });
-
-  const evaluators = api.evals.allConfigs.useQuery({
-    page: paginationState.pageIndex,
-    limit: paginationState.pageSize,
-    projectId,
-    filter: filterState,
-    orderBy: orderByState,
-    searchQuery: searchQuery,
-  });
-  const totalCount = evaluators.data?.totalCount ?? null;
+  const { evaluators, rows, totalCount, hasLegacyEvals } =
+    useEvaluatorTableData({
+      projectId,
+      page: paginationState.pageIndex,
+      limit: paginationState.pageSize,
+      filter: queryFilter.filterState,
+      orderBy: orderByState,
+      searchQuery,
+    });
 
   const existingEvaluator = api.evals.configById.useQuery(
     {
@@ -123,9 +170,10 @@ export default function EvaluatorTable({ projectId }: { projectId: string }) {
 
   useEffect(() => {
     if (evaluators.isSuccess) {
+      const { configs: configList = [] } = evaluators.data ?? {};
       setDetailPageList(
         "evals",
-        evaluators.data.configs.map((evaluator) => ({ id: evaluator.id })),
+        configList.map((evaluator) => ({ id: evaluator.id })),
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -156,13 +204,34 @@ export default function EvaluatorTable({ projectId }: { projectId: string }) {
         );
       },
     }),
+    columnHelper.accessor("totalCost", {
+      header: "Total Cost (7d)",
+      id: "totalCost",
+      size: 120,
+      cell: (row) => {
+        const totalCost = row.getValue();
+
+        if (row.row.original.isCostLoading) {
+          return <Skeleton className="h-4 w-16" />;
+        }
+
+        if (totalCost != null) return usdFormatter(totalCost, 2, 4);
+
+        return "–";
+      },
+    }),
     columnHelper.accessor("result", {
       header: "Result",
       id: "result",
       size: 150,
       cell: (row) => {
         const result = row.getValue();
-        return <LevelCountsDisplay counts={result} />;
+        return (
+          <LevelCountsDisplay
+            counts={result}
+            isLoading={row.row.original.isResultLoading}
+          />
+        );
       },
     }),
     columnHelper.accessor("logs", {
@@ -218,11 +287,33 @@ export default function EvaluatorTable({ projectId }: { projectId: string }) {
       enableSorting: true,
       size: 150,
     }),
+    columnHelper.accessor("isLegacy", {
+      id: "isLegacy",
+      header: "Eval Version",
+      size: 180,
+      enableHiding: true,
+      cell: (row) => {
+        const targetObject = row.row.original.target;
+        const status = row.row.original.rawStatus;
+        const isDeprecated = isLegacyEvalTarget(targetObject);
+
+        if (!isDeprecated) return null;
+
+        return <LegacyBadgeCell status={status} />;
+      },
+    }),
     columnHelper.accessor("target", {
       id: "target",
-      header: "Target",
+      header: "Runs on",
       size: 150,
       enableHiding: true,
+      cell: (row) => {
+        const targetObject = row.getValue();
+        const renderText = isEventTarget(targetObject)
+          ? "observations"
+          : targetObject;
+        return <span className="text-muted-foreground">{renderText}</span>;
+      },
     }),
     columnHelper.accessor("filter", {
       id: "filter",
@@ -278,7 +369,7 @@ export default function EvaluatorTable({ projectId }: { projectId: string }) {
                 className="h-8 w-8 p-0"
                 aria-label="actions"
               >
-                <span className="sr-only [position:relative]">Open menu</span>
+                <span className="sr-only relative">Open menu</span>
                 <MoreVertical className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
@@ -318,112 +409,125 @@ export default function EvaluatorTable({ projectId }: { projectId: string }) {
       columns,
     );
 
-  const urlPathname = `/project/${projectId}/evals`;
-  const { getNavigationPath } = useRunningEvaluatorsPeekNavigation(urlPathname);
-  const { setPeekView } = usePeekState(urlPathname);
+  const peekNavigationProps = usePeekNavigation();
 
-  const convertToTableRow = (
-    jobConfig: RouterOutputs["evals"]["allConfigs"]["configs"][number],
-  ): EvaluatorDataRow => {
-    const result = generateJobExecutionCounts(jobConfig.jobExecutionsByState);
-
-    return {
-      id: jobConfig.id,
-      status: jobConfig.finalStatus,
-      createdAt: jobConfig.createdAt.toLocaleString(),
-      updatedAt: jobConfig.updatedAt.toLocaleString(),
-      template: jobConfig.evalTemplate
-        ? {
-            id: jobConfig.evalTemplate.id,
-            name: jobConfig.evalTemplate.name,
-            version: jobConfig.evalTemplate.version,
-          }
-        : undefined,
-      scoreName: jobConfig.scoreName,
-      target: jobConfig.targetObject,
-      filter: z.array(singleFilter).parse(jobConfig.filter),
-      result: result,
-      maintainer: jobConfig.evalTemplate
-        ? jobConfig.evalTemplate.projectId
-          ? "User maintained"
-          : jobConfig.evalTemplate.name.startsWith(RAGAS_TEMPLATE_PREFIX)
-            ? "Langfuse and Ragas maintained"
-            : "Langfuse maintained"
-        : "Not available",
-    };
-  };
+  const peekConfig = useMemo(
+    () => ({
+      itemType: "RUNNING_EVALUATOR" as const,
+      detailNavigationKey: "evals",
+      peekEventOptions: {
+        ignoredSelectors: [
+          "[aria-label='edit'], [aria-label='actions'], [aria-label='view-logs'], [aria-label='delete']",
+        ],
+      },
+      children: <PeekViewEvaluatorConfigDetail projectId={projectId} />,
+      ...peekNavigationProps,
+    }),
+    [projectId, peekNavigationProps],
+  );
 
   return (
-    <>
-      <DataTableToolbar
-        columns={columns}
-        filterColumnDefinition={evalConfigFilterColumns}
-        filterState={filterState}
-        setFilterState={setFilterState}
-        columnVisibility={columnVisibility}
-        setColumnVisibility={setColumnVisibility}
-        searchConfig={{
-          metadataSearchFields: ["Name"],
-          updateQuery: setSearchQuery,
-          currentQuery: searchQuery ?? undefined,
-          tableAllowsFullTextSearch: false,
-          setSearchType: undefined,
-          searchType: undefined,
-        }}
-      />
-      <DataTable
-        columns={columns}
-        peekView={{
-          itemType: "RUNNING_EVALUATOR",
-          listKey: "evals",
-          urlPathname,
-          onOpenChange: setPeekView,
-          shouldUpdateRowOnDetailPageNavigation: true,
-          peekEventOptions: {
-            ignoredSelectors: [
-              "[aria-label='edit'], [aria-label='actions'], [aria-label='view-logs'], [aria-label='delete']",
-            ],
-          },
-          getNavigationPath,
-          children: (row) => (
-            <PeekViewEvaluatorConfigDetail projectId={projectId} row={row} />
-          ),
-          tableDataUpdatedAt: evaluators.dataUpdatedAt,
-        }}
-        data={
-          evaluators.isLoading
-            ? { isLoading: true, isError: false }
-            : evaluators.isError
-              ? {
-                  isLoading: false,
-                  isError: true,
-                  error: evaluators.error.message,
-                }
-              : {
-                  isLoading: false,
-                  isError: false,
-                  data: evaluators.data.configs.map((evaluator) =>
-                    convertToTableRow(evaluator),
-                  ),
-                }
-        }
-        pagination={{
-          totalCount,
-          onChange: setPaginationState,
-          state: paginationState,
-        }}
-        orderBy={orderByState}
-        setOrderBy={setOrderByState}
-        columnVisibility={columnVisibility}
-        onColumnVisibilityChange={setColumnVisibility}
-      />
+    <DataTableControlsProvider
+      tableName={evaluatorFilterConfig.tableName}
+      defaultSidebarCollapsed={evaluatorFilterConfig.defaultSidebarCollapsed}
+    >
+      <div className="flex h-full w-full flex-col">
+        {hasLegacyEvals && (
+          <div className="p-2 pb-0">
+            <Callout
+              id="eval-remapping-table"
+              variant="warning"
+              key="dismissed-eval-remapping-callouts"
+            >
+              <span>New functionality has landed. </span>
+              <span className="font-semibold">
+                Some of your evaluators (marked &quot;Legacy&quot;) require
+                changes{" "}
+              </span>
+              <span>to benefit from new features and improvements. </span>
+              <Link
+                href="https://langfuse.com/faq/all/llm-as-a-judge-migration"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-dark-blue font-medium hover:opacity-80"
+              >
+                Learn what is changing and how to upgrade
+              </Link>
+              <span>.</span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="ml-1 inline h-4 w-4 cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent>
+                  Your evaluator will continue to work without upgrading, but
+                  you will not benefit from performance improvements.
+                </TooltipContent>
+              </Tooltip>
+            </Callout>
+          </div>
+        )}
+
+        {/* Toolbar spanning full width */}
+        <DataTableToolbar
+          columns={columns}
+          filterState={queryFilter.filterState}
+          columnVisibility={columnVisibility}
+          setColumnVisibility={setColumnVisibility}
+          searchConfig={{
+            metadataSearchFields: ["Name"],
+            updateQuery: setSearchQuery,
+            currentQuery: searchQuery ?? undefined,
+            tableAllowsFullTextSearch: false,
+            setSearchType: undefined,
+            searchType: undefined,
+          }}
+        />
+
+        {/* Content area with sidebar and table */}
+        <ResizableFilterLayout>
+          <DataTableControls queryFilter={queryFilter} />
+
+          <div className="flex flex-1 flex-col overflow-hidden">
+            <DataTable
+              tableName={"evalConfigs"}
+              columns={columns}
+              peekView={peekConfig}
+              data={
+                evaluators.isLoading
+                  ? { isLoading: true, isError: false }
+                  : evaluators.isError
+                    ? {
+                        isLoading: false,
+                        isError: true,
+                        error: evaluators.error.message,
+                      }
+                    : {
+                        isLoading: false,
+                        isError: false,
+                        data: rows,
+                      }
+              }
+              pagination={{
+                totalCount,
+                onChange: setPaginationState,
+                state: paginationState,
+              }}
+              orderBy={orderByState}
+              setOrderBy={setOrderByState}
+              columnVisibility={columnVisibility}
+              onColumnVisibilityChange={setColumnVisibility}
+            />
+          </div>
+        </ResizableFilterLayout>
+        <TablePeekView peekView={peekConfig} />
+      </div>
       <Dialog
         open={!!editConfigId && existingEvaluator.isSuccess}
         onOpenChange={(open) => {
           if (!open) setEditConfigId(null);
         }}
       >
-        <DialogContent className="max-h-[90vh] max-w-screen-xl overflow-y-auto">
+        <DialogContent className="max-h-[90vh] max-w-(--breakpoint-xl) overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Edit configuration</DialogTitle>
           </DialogHeader>
@@ -446,6 +550,7 @@ export default function EvaluatorTable({ projectId }: { projectId: string }) {
                   : undefined
               }
               shouldWrapVariables={true}
+              useDialog={true}
               mode="edit"
               onFormSuccess={() => {
                 setEditConfigId(null);
@@ -460,6 +565,6 @@ export default function EvaluatorTable({ projectId }: { projectId: string }) {
           )}
         </DialogContent>
       </Dialog>
-    </>
+    </DataTableControlsProvider>
   );
 }

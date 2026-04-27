@@ -1,14 +1,17 @@
-import { ScoreDataType } from "@langfuse/shared";
+import { ANNOTATION_SCORE_DATA_TYPES_ARRAY } from "@/src/features/scores/types";
 import { z } from "zod";
 
 export const AnnotationScoreDataSchema = z.object({
+  // Required for ClickHouse deduplication (not shown in UI)
+  id: z.string().nullish(),
+  timestamp: z.date().nullish(),
+  // Required for score writes (shown in UI)
   name: z.string(),
-  scoreId: z.string().optional(),
-  value: z.number().nullable().optional(),
-  stringValue: z.string().optional(),
-  dataType: z.nativeEnum(ScoreDataType),
-  configId: z.string().optional(),
-  comment: z.string().optional(),
+  value: z.number().nullish(),
+  stringValue: z.string().nullish(),
+  dataType: z.enum(ANNOTATION_SCORE_DATA_TYPES_ARRAY),
+  configId: z.string(),
+  comment: z.string().nullish(),
 });
 
 export const AnnotateFormSchema = z.object({

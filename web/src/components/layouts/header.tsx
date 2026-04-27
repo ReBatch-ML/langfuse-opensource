@@ -36,11 +36,11 @@ function HeaderTitle({
 }) {
   switch (level) {
     case "h3":
-      return <h3 className="text-xl font-bold leading-7">{title}</h3>;
+      return <h3 className="text-xl leading-7 font-bold">{title}</h3>;
     case "h4":
-      return <h4 className="text-lg font-medium leading-6">{title}</h4>;
+      return <h4 className="text-lg leading-6 font-medium">{title}</h4>;
     case "h5":
-      return <h5 className="text-base font-medium leading-6">{title}</h5>;
+      return <h5 className="text-base leading-6 font-medium">{title}</h5>;
   }
 }
 
@@ -49,7 +49,7 @@ function BaseHeader({ ...props }: HeaderProps & { level: "h3" | "h4" | "h5" }) {
     <div className={cn(props.className, props.level === "h3" && "mb-2")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-3 md:gap-5">
-          <div className="flex min-w-0 flex-row justify-center align-middle">
+          <div className="flex min-w-0 flex-row items-center">
             <HeaderTitle title={props.title} level={props.level} />
             {props.help ? (
               <DocPopup

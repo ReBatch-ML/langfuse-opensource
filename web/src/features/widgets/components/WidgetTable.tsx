@@ -9,7 +9,7 @@ import { createColumnHelper } from "@tanstack/react-table";
 import TableLink from "@/src/components/table/table-link";
 import { LocalIsoDate } from "@/src/components/LocalIsoDate";
 import { useDetailPageLists } from "@/src/features/navigate-detail-pages/context";
-import { startCase } from "lodash";
+import startCase from "lodash/startCase";
 import { Button } from "@/src/components/ui/button";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 import { Trash } from "lucide-react";
@@ -22,6 +22,8 @@ import {
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import { showErrorToast } from "@/src/features/notifications/showErrorToast";
 import { useRouter } from "next/router";
+import { getChartTypeDisplayName } from "@/src/features/widgets/chart-library/utils";
+import { type DashboardWidgetChartType } from "@langfuse/shared/src/db";
 
 type WidgetTableRow = {
   id: string;
@@ -84,7 +86,7 @@ export function DeleteWidget({
           <Button
             type="button"
             variant="destructive"
-            loading={mutDeleteWidget.isLoading}
+            loading={mutDeleteWidget.isPending}
             onClick={() => {
               if (!projectId) {
                 console.error("Project ID is missing");
@@ -186,24 +188,8 @@ export function DashboardWidgetTable() {
       id: "chartType",
       enableSorting: true,
       size: 100,
-      cell: (row) => {
-        switch (row.getValue()) {
-          case "LINE_TIME_SERIES":
-            return "Line Chart (Time Series)";
-          case "BAR_TIME_SERIES":
-            return "Bar Chart (Time Series)";
-          case "HORIZONTAL_BAR":
-            return "Horizontal Bar Chart (Total Value)";
-          case "VERTICAL_BAR":
-            return "Vertical Bar Chart (Total Value)";
-          case "PIE":
-            return "Pie Chart (Total Value)";
-          case "NUMBER":
-            return "Big Number (Total Value)";
-          default:
-            return "Unknown Chart Type";
-        }
-      },
+      cell: (row) =>
+        getChartTypeDisplayName(row.getValue() as DashboardWidgetChartType),
     }),
     columnHelper.accessor("createdAt", {
       header: "Created At",
@@ -242,6 +228,7 @@ export function DashboardWidgetTable() {
 
   return (
     <DataTable
+      tableName={"widgets"}
       columns={widgetColumns}
       data={
         widgets.isLoading
@@ -255,7 +242,7 @@ export function DashboardWidgetTable() {
             : {
                 isLoading: false,
                 isError: false,
-                data: widgets.data.widgets,
+                data: widgets.data?.widgets ?? [],
               }
       }
       orderBy={orderByState}

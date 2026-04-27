@@ -1,4 +1,11 @@
-import { expect, test, describe, beforeAll } from "vitest";
+import {
+  expect,
+  test,
+  describe,
+  beforeAll,
+  beforeEach,
+  afterEach,
+} from "vitest";
 import { env } from "../env";
 import { randomUUID } from "crypto";
 import {
@@ -6,9 +13,12 @@ import {
   StorageServiceFactory,
 } from "@langfuse/shared/src/server";
 
+const { Readable } = require("stream");
+
 describe("StorageService", () => {
   let storageService: StorageService;
   let storageServiceWithExternalEndpoint: StorageService;
+  let s3Prefix: string;
   const baseUrl = `${env.LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT}/${env.LANGFUSE_S3_EVENT_UPLOAD_BUCKET}`;
   const externalEndpoint = "https://external-endpoint.example.com";
 
@@ -33,15 +43,27 @@ describe("StorageService", () => {
     });
   });
 
-  test("uploadFile should upload a file and return a signed URL", async () => {
+  beforeEach(() => {
+    s3Prefix = `${randomUUID()}/`;
+  });
+
+  afterEach(async () => {
+    const files = await storageService.listFiles(s3Prefix);
+
+    if (files.length == 0) return;
+
+    await storageService.deleteFiles(files.map((f) => f.file));
+  });
+
+  test("uploadWithSignedUrl should upload a file and return a signed URL", async () => {
     // Setup
-    const fileName = `${randomUUID()}.txt`;
+    const fileName = `${s3Prefix}${randomUUID()}.txt`;
     const fileType = "text/plain";
     const data = "Hello, world!";
     const expiresInSeconds = 3600;
 
     // When
-    const result = await storageService.uploadFile({
+    const result = await storageService.uploadWithSignedUrl({
       fileName,
       fileType,
       data,
@@ -49,14 +71,27 @@ describe("StorageService", () => {
     });
 
     // Then
-    expect(result.signedUrl).toContain(`${baseUrl}/${fileName}`);
+    if (env.LANGFUSE_USE_OCI_NATIVE_OBJECT_STORAGE !== "true") {
+      expect(result.signedUrl).toContain(`${baseUrl}/${fileName}`);
+    } else {
+      expect(result.signedUrl).toMatch(/^https:\/\/.+oraclecloud\.com/);
+      expect(result.signedUrl).toContain("/p/");
+      expect(result.signedUrl).toContain("/o/");
+
+      // extract the object path after /o/ and decode (works whether the object name was percent-encoded)
+      const objMatch = result.signedUrl.match(/\/o\/(.+?)(?:$|[?#])/);
+      expect(objMatch).toBeTruthy();
+      const decodedObjPath = objMatch ? decodeURIComponent(objMatch[1]) : "";
+      expect(decodedObjPath).toContain(fileName);
+    }
+
     const file = await storageService.download(fileName);
     expect(file).toBe(data);
   });
 
   test("uploadJson should upload a JSON file", async () => {
     // Setup
-    const fileName = `${randomUUID()}.json`;
+    const fileName = `${s3Prefix}${randomUUID()}.json`;
     const data = [{ hello: "world" }];
     const expiresInSeconds = 3600;
 
@@ -70,13 +105,13 @@ describe("StorageService", () => {
 
   test("listFiles should list files in the bucket", async () => {
     // Setup
-    const fileName1 = `${randomUUID()}.txt`;
-    const fileName2 = `${randomUUID()}.txt`;
+    const fileName1 = `${s3Prefix}${randomUUID()}.txt`;
+    const fileName2 = `${s3Prefix}${randomUUID()}.txt`;
     await storageService.uploadJson(fileName1, [{ hello: "world" }]);
     await storageService.uploadJson(fileName2, [{ hello: "world" }]);
 
     // When
-    const files = await storageService.listFiles("");
+    const files = await storageService.listFiles(s3Prefix);
 
     // Then
     const fileNames = files.map((f) => f.file);
@@ -95,14 +130,14 @@ describe("StorageService", () => {
     await storageService.deleteFiles([fileName1]);
 
     // Then
-    const files = await storageService.listFiles("");
+    const files = await storageService.listFiles(s3Prefix);
     const fileNames = files.map((f) => f.file);
     expect(fileNames).not.toContain(fileName1);
   });
 
-  test("getSignedUrl should return URL with internal endpoint when no external endpoint is configured", async () => {
+  test("uploadFile should successfully process a Readable entity", async () => {
     // Setup
-    const fileName = `${randomUUID()}.txt`;
+    const fileName = `${s3Prefix}${randomUUID()}.txt`;
     const fileType = "text/plain";
     const data = "Hello, world!";
     const expiresInSeconds = 3600;
@@ -111,8 +146,7 @@ describe("StorageService", () => {
     await storageService.uploadFile({
       fileName,
       fileType,
-      data,
-      expiresInSeconds,
+      data: Readable.from(data),
     });
 
     // When
@@ -122,13 +156,48 @@ describe("StorageService", () => {
     );
 
     // Then
-    expect(signedUrl).toContain(env.LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT);
+    if (env.LANGFUSE_USE_OCI_NATIVE_OBJECT_STORAGE !== "true") {
+      expect(signedUrl).toContain(env.LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT);
+    } else {
+      expect(signedUrl).toMatch(/^https:\/\/.+oraclecloud\.com/);
+      expect(new URL(signedUrl).hostname).toContain("objectstorage");
+    }
+    expect(signedUrl).not.toContain("external-endpoint.example.com");
+  });
+
+  test("getSignedUrl should return URL with internal endpoint when no external endpoint is configured", async () => {
+    // Setup
+    const fileName = `${s3Prefix}${randomUUID()}.txt`;
+    const fileType = "text/plain";
+    const data = "Hello, world!";
+    const expiresInSeconds = 3600;
+
+    // Upload a file
+    await storageService.uploadFile({
+      fileName,
+      fileType,
+      data,
+    });
+
+    // When
+    const signedUrl = await storageService.getSignedUrl(
+      fileName,
+      expiresInSeconds,
+    );
+
+    // Then
+    if (env.LANGFUSE_USE_OCI_NATIVE_OBJECT_STORAGE !== "true") {
+      expect(signedUrl).toContain(env.LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT);
+    } else {
+      expect(signedUrl).toMatch(/^https:\/\/.+oraclecloud\.com/);
+      expect(new URL(signedUrl).hostname).toContain("objectstorage");
+    }
     expect(signedUrl).not.toContain("external-endpoint.example.com");
   });
 
   test("getSignedUrl should return URL with external endpoint when configured", async () => {
     // Setup
-    const fileName = `${randomUUID()}.txt`;
+    const fileName = `${s3Prefix}${randomUUID()}.txt`;
     const fileType = "text/plain";
     const data = "Hello, world!";
     const expiresInSeconds = 3600;
@@ -138,7 +207,6 @@ describe("StorageService", () => {
       fileName,
       fileType,
       data,
-      expiresInSeconds,
     });
 
     // When
@@ -170,7 +238,13 @@ describe("StorageService", () => {
     });
 
     // Then
-    expect(signedUrl).toContain(env.LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT);
+
+    if (env.LANGFUSE_USE_OCI_NATIVE_OBJECT_STORAGE !== "true") {
+      expect(signedUrl).toContain(env.LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT);
+    } else {
+      expect(signedUrl).toMatch(/^https:\/\/.+oraclecloud\.com/);
+      expect(new URL(signedUrl).hostname).toContain("objectstorage");
+    }
     expect(signedUrl).not.toContain("external-endpoint.example.com");
   });
 
@@ -197,20 +271,22 @@ describe("StorageService", () => {
     expect(signedUrl).not.toContain(env.LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT);
   });
 
-  test("uploadFile should return signed URL with external endpoint when configured", async () => {
+  test("uploadWithSignedUrl should return signed URL with external endpoint when configured", async () => {
     // Setup
-    const fileName = `${randomUUID()}.txt`;
+    const fileName = `${s3Prefix}${randomUUID()}.txt`;
     const fileType = "text/plain";
     const data = "Hello, external world!";
     const expiresInSeconds = 3600;
 
     // When
-    const result = await storageServiceWithExternalEndpoint.uploadFile({
-      fileName,
-      fileType,
-      data,
-      expiresInSeconds,
-    });
+    const result = await storageServiceWithExternalEndpoint.uploadWithSignedUrl(
+      {
+        fileName,
+        fileType,
+        data,
+        expiresInSeconds,
+      },
+    );
 
     // Then
     expect(result.signedUrl).toContain("external-endpoint.example.com");

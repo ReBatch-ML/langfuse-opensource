@@ -1,4 +1,4 @@
-import { Button } from "@/src/components/ui/button";
+import { Badge } from "@/src/components/ui/badge";
 import { TagButton } from "@/src/features/tag/components/TagButton";
 import { TagIcon } from "lucide-react";
 
@@ -7,7 +7,6 @@ type TagListProps = {
   isLoading: boolean;
   viewOnly?: boolean;
   isTableCell?: boolean;
-  className?: string;
 };
 
 const TagList = ({
@@ -27,9 +26,9 @@ const TagList = ({
       />
     ))
   ) : (
-    <Button variant={isTableCell ? "ghost" : "tertiary"} size="icon-xs">
+    <Badge variant="tertiary">
       <TagIcon className="h-3.5 w-3.5" />
-    </Button>
+    </Badge>
   );
 };
 

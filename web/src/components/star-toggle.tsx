@@ -3,8 +3,8 @@ import { StarIcon } from "lucide-react";
 import { Button } from "@/src/components/ui/button";
 import { api } from "@/src/utils/api";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
-import { type RouterOutput, type RouterInput } from "@/src/utils/types";
-import { useState } from "react";
+import { type RouterInput } from "@/src/utils/types";
+import { useEffect, useState } from "react";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import { trpcErrorToast } from "@/src/utils/trpcErrorToast";
 
@@ -95,7 +95,6 @@ export function StarTraceToggle({
     },
     onSettled: () => {
       setIsLoading(false);
-      void utils.traces.all.invalidate();
     },
   });
 
@@ -125,13 +124,11 @@ export function StarTraceToggle({
 export function StarTraceDetailsToggle({
   projectId,
   traceId,
-  timestamp,
   value,
   size = "icon",
 }: {
   projectId: string;
   traceId: string;
-  timestamp?: Date;
   value: boolean;
   size?: "icon" | "icon-xs";
 }) {
@@ -142,72 +139,50 @@ export function StarTraceDetailsToggle({
   });
   const capture = usePostHogClientCapture();
   const [isLoading, setIsLoading] = useState(false);
+  const [optimisticValue, setOptimisticValue] = useState(value);
+
+  useEffect(() => {
+    setOptimisticValue(value);
+  }, [value]);
 
   const mutBookmarkTrace = api.traces.bookmark.useMutation({
-    onMutate: async () => {
-      // Cancel any outgoing refetches
-      // (so they don't overwrite our optimistic update)
-      await utils.traces.byIdWithObservationsAndScores.cancel();
-
-      setIsLoading(true);
-
-      // Snapshot the previous value
-      const prevData = utils.traces.byIdWithObservationsAndScores.getData({
-        traceId,
-        projectId,
-        timestamp,
-      });
-
-      return { prevData };
-    },
-    onError: (err, _newTodo, context) => {
+    onError: (err) => {
       setIsLoading(false);
       trpcErrorToast(err);
-      // Rollback to the previous value if mutation fails
-      utils.traces.byIdWithObservationsAndScores.setData(
-        { traceId, projectId, timestamp },
-        context?.prevData,
-      );
     },
     onSettled: () => {
       setIsLoading(false);
-
-      utils.traces.byIdWithObservationsAndScores.setData(
-        { traceId, projectId, timestamp },
-        (
-          oldQueryData:
-            | RouterOutput["traces"]["byIdWithObservationsAndScores"]
-            | undefined,
-        ) => {
-          return oldQueryData
-            ? {
-                ...oldQueryData,
-                bookmarked: !oldQueryData.bookmarked,
-              }
-            : undefined;
-        },
-      );
+      // Refetch to ensure we have the latest data from the server
       void utils.traces.byIdWithObservationsAndScores.invalidate();
       void utils.traces.all.invalidate();
+      void utils.events.byTraceId.invalidate();
     },
   });
 
   return (
     <StarToggle
-      value={value}
+      value={optimisticValue}
       size={size}
       disabled={!hasAccess}
       isLoading={isLoading}
-      onClick={(value) => {
+      onClick={(nextValue) => {
+        const previousValue = optimisticValue;
+        setIsLoading(true);
+        setOptimisticValue(nextValue);
         capture("trace_detail:bookmark_button_click", {
           id: traceId,
-          value: value,
+          value: nextValue,
         });
-        return mutBookmarkTrace.mutateAsync({
-          projectId,
-          traceId,
-          bookmarked: value,
-        });
+        return mutBookmarkTrace
+          .mutateAsync({
+            projectId,
+            traceId,
+            bookmarked: nextValue,
+          })
+          .catch((error) => {
+            setOptimisticValue(previousValue);
+            throw error;
+          });
       }}
     />
   );
@@ -240,7 +215,7 @@ export function StarSessionToggle({
     <StarToggle
       value={value}
       size={size}
-      isLoading={mutBookmarkSession.isLoading}
+      isLoading={mutBookmarkSession.isPending}
       disabled={!hasAccess}
       onClick={(value) => {
         capture("table:bookmark_button_click", {

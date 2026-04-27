@@ -3,6 +3,7 @@ import useProjectIdFromURL from "@/src/hooks/useProjectIdFromURL";
 import { useOrderByState } from "@/src/features/orderBy/hooks/useOrderByState";
 import { NumberParam, useQueryParams, withDefault } from "use-query-params";
 import { api } from "@/src/utils/api";
+import { safeExtract } from "@/src/utils/map-utils";
 import { DataTable } from "@/src/components/table/data-table";
 import { type LangfuseColumnDef } from "@/src/components/table/types";
 import { createColumnHelper } from "@tanstack/react-table";
@@ -246,7 +247,7 @@ export function DashboardTable() {
                   <MoreVertical className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent className="flex flex-col [&>*]:w-full [&>*]:justify-start">
+              <DropdownMenuContent className="flex flex-col *:w-full *:justify-start">
                 {owner === "PROJECT" && (
                   <DropdownMenuItem asChild>
                     <EditDashboardButton
@@ -258,7 +259,10 @@ export function DashboardTable() {
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuItem asChild>
-                  <CloneDashboardButton dashboardId={id} projectId={projectId} />
+                  <CloneDashboardButton
+                    dashboardId={id}
+                    projectId={projectId}
+                  />
                 </DropdownMenuItem>
                 {owner === "PROJECT" && (
                   <DropdownMenuItem asChild>
@@ -279,9 +283,10 @@ export function DashboardTable() {
 
   return (
     <DataTable
+      tableName={"dashboards"}
       columns={dashboardColumns}
       data={
-        dashboards.isLoading
+        dashboards.isPending
           ? { isLoading: true, isError: false }
           : dashboards.isError
             ? {
@@ -292,7 +297,7 @@ export function DashboardTable() {
             : {
                 isLoading: false,
                 isError: false,
-                data: dashboards.data.dashboards,
+                data: safeExtract(dashboards.data, "dashboards", []),
               }
       }
       orderBy={orderByState}

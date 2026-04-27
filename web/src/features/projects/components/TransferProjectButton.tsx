@@ -81,7 +81,7 @@ export function TransferProjectButton() {
     },
   });
 
-  const form = useForm<z.infer<typeof formSchema>>({
+  const form = useForm({
     resolver: zodResolver(formSchema),
     defaultValues: {
       name: "",
@@ -130,11 +130,7 @@ export function TransferProjectButton() {
           </Alert>
         </DialogHeader>
         <Form {...form}>
-          <form
-            // eslint-disable-next-line @typescript-eslint/no-misused-promises
-            onSubmit={form.handleSubmit(onSubmit)}
-            className="space-y-8"
-          >
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
             <DialogBody>
               <FormField
                 control={form.control}
@@ -146,7 +142,7 @@ export function TransferProjectButton() {
                       <Select
                         onValueChange={field.onChange}
                         value={field.value}
-                        disabled={transferProject.isLoading}
+                        disabled={transferProject.isPending}
                       >
                         <SelectTrigger>
                           <SelectValue placeholder="Select organization" />
@@ -191,7 +187,7 @@ export function TransferProjectButton() {
               <Button
                 type="submit"
                 variant="destructive"
-                loading={transferProject.isLoading}
+                loading={transferProject.isPending}
                 className="w-full"
               >
                 Transfer project

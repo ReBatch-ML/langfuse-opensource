@@ -72,10 +72,10 @@ export default function NewDashboard() {
               onClick={handleCreateDashboard}
               disabled={
                 !dashboardName.trim() ||
-                createDashboard.isLoading ||
+                createDashboard.isPending ||
                 !hasCUDAccess
               }
-              loading={createDashboard.isLoading}
+              loading={createDashboard.isPending}
             >
               Create
             </Button>
@@ -110,7 +110,7 @@ export default function NewDashboard() {
           />
         </div>
 
-        <div className="text-sm text-muted-foreground">
+        <div className="text-muted-foreground text-sm">
           <p>
             After creating the dashboard, you can add widgets to visualize your
             data.

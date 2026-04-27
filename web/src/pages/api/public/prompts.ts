@@ -1,4 +1,5 @@
 import { createPrompt } from "@/src/features/prompts/server/actions/createPrompt";
+import { getPromptByName } from "@/src/features/prompts/server/actions/getPromptByName";
 import { ApiAuthService } from "@/src/features/public-api/server/apiAuth";
 import { cors, runMiddleware } from "@/src/features/public-api/server/cors";
 import { prisma } from "@langfuse/shared/src/db";
@@ -6,25 +7,16 @@ import { isPrismaException } from "@/src/utils/exceptions";
 import { type NextApiRequest, type NextApiResponse } from "next";
 import { z } from "zod";
 import {
-  LegacyCreatePromptSchema,
-  GetPromptSchema,
-} from "@/src/features/prompts/server/utils/validation";
-import {
   UnauthorizedError,
   LangfuseNotFoundError,
   BaseError,
   MethodNotAllowedError,
   ForbiddenError,
-  type Prompt,
+  GetPromptSchema,
+  LegacyCreatePromptSchema,
+  PRODUCTION_LABEL,
 } from "@langfuse/shared";
-import {
-  PromptService,
-  redis,
-  recordIncrement,
-  traceException,
-  logger,
-} from "@langfuse/shared/src/server";
-import { PRODUCTION_LABEL } from "@/src/features/prompts/constants";
+import { redis, traceException, logger } from "@langfuse/shared/src/server";
 import { RateLimitService } from "@/src/features/public-api/server/RateLimitService";
 import { telemetry } from "@/src/features/telemetry";
 
@@ -70,25 +62,11 @@ export default async function handler(
         return rateLimitCheck.sendRestResponseIfLimited(res);
       }
 
-      const promptService = new PromptService(prisma, redis, recordIncrement);
-
-      let prompt: Prompt | null = null;
-
-      if (version) {
-        prompt = await promptService.getPrompt({
-          projectId,
-          promptName,
-          version,
-          label: undefined,
-        });
-      } else {
-        prompt = await promptService.getPrompt({
-          projectId,
-          promptName,
-          label: PRODUCTION_LABEL,
-          version: undefined,
-        });
-      }
+      const prompt = await getPromptByName({
+        promptName,
+        projectId,
+        version,
+      });
 
       if (!prompt) throw new LangfuseNotFoundError("Prompt not found");
 
@@ -139,7 +117,7 @@ export default async function handler(
     if (error instanceof z.ZodError) {
       return res.status(400).json({
         message: "Invalid request data",
-        error: error.errors,
+        error: error.issues,
       });
     }
 

@@ -38,9 +38,9 @@ export const DeleteAnnotationQueueButton = ({
     <Button variant="ghost" disabled={!hasAccess}>
       <div className="flex w-full flex-row items-center gap-1">
         {hasAccess ? (
-          <Trash className="-ml-0.5 mr-1.5 h-4 w-4" />
+          <Trash className="mr-1.5 -ml-0.5 h-4 w-4" />
         ) : (
-          <LockIcon className="-ml-0.5 mr-1.5 h-4 w-4" aria-hidden="true" />
+          <LockIcon className="mr-1.5 -ml-0.5 h-4 w-4" aria-hidden="true" />
         )}
         <span className="text-sm font-normal">Delete</span>
       </div>
@@ -51,13 +51,13 @@ export const DeleteAnnotationQueueButton = ({
     <Dialog
       open={isOpen}
       onOpenChange={(open) => {
-        if (!mutDelete.isLoading) {
+        if (!mutDelete.isPending) {
           setIsOpen(open);
         }
       }}
     >
       <DialogTrigger asChild>{button}</DialogTrigger>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="overflow-hidden sm:max-w-xl">
         <DialogHeader>
           <DialogTitle className="mb-4">Please confirm</DialogTitle>
           <DialogDescription className="text-md p-0">
@@ -69,8 +69,8 @@ export const DeleteAnnotationQueueButton = ({
         <DialogFooter>
           <Button
             variant="destructive"
-            loading={mutDelete.isLoading}
-            disabled={mutDelete.isLoading}
+            loading={mutDelete.isPending}
+            disabled={mutDelete.isPending}
             onClick={async (event) => {
               event.preventDefault();
               await mutDelete.mutateAsync({

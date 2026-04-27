@@ -38,7 +38,7 @@ enum CopySettings {
 
 const formSchema = z.object({
   name: z.string().min(1, "Name is required"),
-  isCopySingleVersion: z.nativeEnum(CopySettings),
+  isCopySingleVersion: z.enum(CopySettings),
 });
 
 const DuplicatePromptForm: React.FC<{
@@ -50,7 +50,7 @@ const DuplicatePromptForm: React.FC<{
 }> = ({ projectId, promptId, promptName, promptVersion, onFormSuccess }) => {
   const capture = usePostHogClientCapture();
   const router = useRouter();
-  const form = useForm<z.infer<typeof formSchema>>({
+  const form = useForm({
     resolver: zodResolver(formSchema),
     defaultValues: {
       name: promptName + "-copy",
@@ -110,7 +110,6 @@ const DuplicatePromptForm: React.FC<{
   return (
     <Form {...form}>
       <form
-        // eslint-disable-next-line @typescript-eslint/no-misused-promises
         onSubmit={form.handleSubmit(onSubmit)}
         className="flex h-full flex-1 flex-col gap-4"
       >
@@ -141,7 +140,7 @@ const DuplicatePromptForm: React.FC<{
                     defaultValue={field.value}
                     className="flex flex-col space-y-1"
                   >
-                    <FormItem className="flex items-center space-x-3 space-y-0">
+                    <FormItem className="flex items-center space-y-0 space-x-3">
                       <FormControl>
                         <RadioGroupItem value={CopySettings.SINGLE_VERSION} />
                       </FormControl>
@@ -149,7 +148,7 @@ const DuplicatePromptForm: React.FC<{
                         Copy only version {promptVersion}
                       </FormLabel>
                     </FormItem>
-                    <FormItem className="flex items-center space-x-3 space-y-0">
+                    <FormItem className="flex items-center space-y-0 space-x-3">
                       <FormControl>
                         <RadioGroupItem value={CopySettings.ALL_VERSIONS} />
                       </FormControl>
@@ -167,7 +166,7 @@ const DuplicatePromptForm: React.FC<{
         <DialogFooter>
           <Button
             type="submit"
-            loading={duplicatePrompt.isLoading}
+            loading={duplicatePrompt.isPending}
             className="mt-auto w-full"
           >
             Submit

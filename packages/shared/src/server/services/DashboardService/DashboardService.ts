@@ -15,6 +15,7 @@ import {
   DashboardDefinitionSchema,
 } from "./types";
 import { z } from "zod";
+import { singleFilter } from "../../../";
 
 export class DashboardService {
   /**
@@ -156,6 +157,32 @@ export class DashboardService {
   }
 
   /**
+   * Updates a dashboard's filters.
+   */
+  public static async updateDashboardFilters(
+    dashboardId: string,
+    projectId: string,
+    filters: z.infer<typeof singleFilter>[],
+    userId?: string,
+  ): Promise<DashboardDomain> {
+    const updatedDashboard = await prisma.dashboard.update({
+      where: {
+        id: dashboardId,
+        projectId,
+      },
+      data: {
+        updatedBy: userId,
+        filters,
+      },
+    });
+
+    return DashboardDomainSchema.parse({
+      ...updatedDashboard,
+      owner: updatedDashboard.projectId ? "PROJECT" : "LANGFUSE",
+    });
+  }
+
+  /**
    * Gets a dashboard by ID.
    */
   public static async getDashboard(
@@ -258,6 +285,7 @@ export class DashboardService {
         filters: input.filters,
         chartType: input.chartType,
         chartConfig: input.chartConfig,
+        minVersion: input.minVersion ?? 1,
         createdBy: userId,
         updatedBy: userId,
       },
@@ -316,6 +344,9 @@ export class DashboardService {
         filters: input.filters,
         chartType: input.chartType,
         chartConfig: input.chartConfig,
+        ...(input.minVersion !== undefined
+          ? { minVersion: input.minVersion }
+          : {}),
         updatedBy: userId,
       },
     });
@@ -407,6 +438,7 @@ export class DashboardService {
           filters: sourceWidget.filters ?? [],
           chartType: sourceWidget.chartType,
           chartConfig: sourceWidget.chartConfig ?? {},
+          minVersion: sourceWidget.minVersion,
           projectId, // project owned
           createdBy: userId,
           updatedBy: userId,

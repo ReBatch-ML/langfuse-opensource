@@ -13,9 +13,13 @@ export const LineChartTimeSeriesConfig = BaseTimeSeriesChartConfig.extend({
 export const BarChartTimeSeriesConfig = BaseTimeSeriesChartConfig.extend({
   type: z.literal("BAR_TIME_SERIES"),
 });
+export const AreaChartTimeSeriesConfig = BaseTimeSeriesChartConfig.extend({
+  type: z.literal("AREA_TIME_SERIES"),
+});
 
 export const HorizontalBarChartConfig = BaseTotalValueChartConfig.extend({
   type: z.literal("HORIZONTAL_BAR"),
+  show_value_labels: z.boolean().optional(),
 });
 export const VerticalBarChartConfig = BaseTotalValueChartConfig.extend({
   type: z.literal("VERTICAL_BAR"),
@@ -33,6 +37,16 @@ export const HistogramChartConfig = BaseTotalValueChartConfig.extend({
   bins: z.number().int().min(1).max(100).optional().default(10),
 });
 
+export const PivotTableChartConfig = BaseTotalValueChartConfig.extend({
+  type: z.literal("PIVOT_TABLE"),
+  defaultSort: z
+    .object({
+      column: z.string(),
+      order: z.enum(["ASC", "DESC"]),
+    })
+    .optional(),
+});
+
 // Define dimension schema
 export const DimensionSchema = z.object({
   field: z.string(),
@@ -48,11 +62,13 @@ export const MetricSchema = z.object({
 export const ChartConfigSchema = z.discriminatedUnion("type", [
   LineChartTimeSeriesConfig,
   BarChartTimeSeriesConfig,
+  AreaChartTimeSeriesConfig,
   HorizontalBarChartConfig,
   VerticalBarChartConfig,
   PieChartConfig,
   BigNumberChartConfig,
   HistogramChartConfig,
+  PivotTableChartConfig,
 ]);
 
 export const DashboardDefinitionWidgetWidgetSchema = z.object({
@@ -86,6 +102,7 @@ export const DashboardDomainSchema = z.object({
   name: z.string(),
   description: z.string(),
   definition: DashboardDefinitionSchema,
+  filters: z.array(singleFilter).default([]),
   owner: OwnerEnum,
 });
 
@@ -105,12 +122,13 @@ export const WidgetDomainSchema = z.object({
   projectId: z.string().nullable(),
   name: z.string(),
   description: z.string(),
-  view: z.nativeEnum(DashboardWidgetViews),
+  view: z.enum(DashboardWidgetViews),
   dimensions: z.array(DimensionSchema),
   metrics: z.array(MetricSchema),
   filters: z.array(singleFilter),
-  chartType: z.nativeEnum(DashboardWidgetChartType),
+  chartType: z.enum(DashboardWidgetChartType),
   chartConfig: ChartConfigSchema,
+  minVersion: z.number().int().default(1),
   owner: OwnerEnum,
 });
 
@@ -118,12 +136,13 @@ export const WidgetDomainSchema = z.object({
 export const CreateWidgetInputSchema = z.object({
   name: z.string().min(1, "Widget name is required"),
   description: z.string(),
-  view: z.nativeEnum(DashboardWidgetViews),
+  view: z.enum(DashboardWidgetViews),
   dimensions: z.array(DimensionSchema),
   metrics: z.array(MetricSchema),
   filters: z.array(singleFilter),
-  chartType: z.nativeEnum(DashboardWidgetChartType),
+  chartType: z.enum(DashboardWidgetChartType),
   chartConfig: ChartConfigSchema,
+  minVersion: z.number().int().optional(),
 });
 
 // Define the widget list response

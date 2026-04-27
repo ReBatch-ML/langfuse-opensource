@@ -31,6 +31,7 @@ import { api } from "@/src/utils/api";
 
 import { JSONSchemaFormSchema, type LlmSchema } from "@langfuse/shared";
 import { CodeMirrorEditor } from "@/src/components/editor";
+import { showErrorToast } from "@/src/features/notifications/showErrorToast";
 
 const formSchema = z.object({
   name: LLMSchemaNameSchema,
@@ -65,7 +66,7 @@ export const CreateOrEditLLMSchemaDialog: React.FC<
 
   const [open, setOpen] = useState(false);
 
-  const form = useForm<FormValues>({
+  const form = useForm({
     resolver: zodResolver(formSchema),
     defaultValues: props.defaultValues ?? {
       name: "",
@@ -139,15 +140,19 @@ export const CreateOrEditLLMSchemaDialog: React.FC<
       const parsedJson = JSON.parse(currentValue);
       const prettified = JSON.stringify(parsedJson, null, 2);
       form.setValue("schema", prettified);
-    } catch (error) {
-      console.error("Failed to prettify JSON:", error);
+    } catch {
+      showErrorToast(
+        "Failed to prettify JSON",
+        "Please verify your input is valid JSON",
+        "WARNING",
+      );
     }
   };
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{children}</DialogTrigger>
-      <DialogContent className="flex flex-col sm:min-w-[32rem] md:min-w-[40rem]">
+      <DialogContent className="flex flex-col sm:min-w-128 md:min-w-160">
         <DialogHeader>
           <DialogTitle>
             {existingLlmSchema ? "Edit LLM Schema" : "Create LLM Schema"}
@@ -159,8 +164,13 @@ export const CreateOrEditLLMSchemaDialog: React.FC<
 
         <Form {...form}>
           <form
-            onSubmit={form.handleSubmit(onSubmit)}
-            className="flex flex-1 flex-col"
+            onSubmit={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+
+              form.handleSubmit(onSubmit)();
+            }}
+            className="grid max-h-full min-h-0 overflow-hidden"
           >
             <DialogBody>
               <div className="flex-1 space-y-4 overflow-y-auto">
@@ -232,13 +242,13 @@ export const CreateOrEditLLMSchemaDialog: React.FC<
                             variant="outline"
                             size="sm"
                             onClick={prettifyJson}
-                            className="absolute right-3 top-3 text-xs"
+                            className="absolute top-3 right-3 text-xs"
                           >
                             Prettify
                           </Button>
                         </div>
                       </FormControl>
-                      <p className="text-xs text-muted-foreground">
+                      <p className="text-muted-foreground text-xs">
                         Parameters must be a valid JSON Schema object
                       </p>
                       <FormMessage />
@@ -248,9 +258,9 @@ export const CreateOrEditLLMSchemaDialog: React.FC<
               </div>
             </DialogBody>
 
-            <DialogFooter className="sticky bottom-0 mt-4 flex flex-col gap-2 border-t bg-background pt-4">
+            <DialogFooter className="bg-background sticky bottom-0 mt-4 flex flex-col gap-2 border-t pt-4">
               <div className="flex w-full flex-col gap-2">
-                <p className="text-xs text-muted-foreground">
+                <p className="text-muted-foreground text-xs">
                   Note: Changes to schemas are reflected to all members of this
                   project.
                 </p>

@@ -1,22 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/src/components/ui/button";
 import { usePlaygroundContext } from "../context";
-import { CheckIcon, CopyIcon, PlusIcon } from "@radix-ui/react-icons";
 import { ChatMessageRole, ChatMessageType } from "@langfuse/shared";
-import { BracesIcon } from "lucide-react";
+import { BracesIcon, Check, Copy, Plus } from "lucide-react";
 import { ToolCallCard } from "@/src/components/ChatMessages/ToolCallCard";
+import { copyTextToClipboard } from "@/src/utils/clipboard";
+import { ThinkingBlock } from "@/src/components/trace2/components/IOPreview/components/ThinkingBlock";
 
 export const GenerationOutput = () => {
   const [isCopied, setIsCopied] = useState(false);
   const [isAdded, setIsAdded] = useState(false);
   const [isJson, setIsJson] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
-  const { output, outputJson, addMessage, outputToolCalls } =
+  const { output, outputReasoning, outputJson, addMessage, outputToolCalls } =
     usePlaygroundContext();
 
   const handleCopy = () => {
     setIsCopied(true);
-    void navigator.clipboard.writeText(isJson ? outputJson : output);
+    const textToCopy = isJson ? outputJson : output;
+    void copyTextToClipboard(textToCopy);
     setTimeout(() => setIsCopied(false), 1000);
   };
 
@@ -46,9 +48,13 @@ export const GenerationOutput = () => {
     }
   }, [output]);
 
+  const checkIcon = <Check className="h-2 w-2" />;
+  const copyIcon = <Copy className="h-2 w-2" />;
+  const plusIcon = <Plus className="h-2 w-2" />;
+
   const copyButton =
     output || outputToolCalls.length ? (
-      <div className="absolute right-3 top-2 flex space-x-1 opacity-50">
+      <div className="absolute top-2 right-3 flex space-x-1 opacity-50">
         <Button
           size="icon"
           variant={isJson ? "default" : "secondary"}
@@ -66,42 +72,51 @@ export const GenerationOutput = () => {
           onClick={!isCopied ? handleCopy : undefined}
           title="Copy output"
         >
-          {isCopied ? <CheckIcon /> : <CopyIcon />}
+          {isCopied ? checkIcon : copyIcon}
         </Button>
 
         <Button
-          className="flex items-center gap-1 whitespace-nowrap p-0 px-1"
+          className="flex items-center gap-1 p-0 px-1 whitespace-nowrap"
           variant="secondary"
           onClick={!isAdded ? handleAddAssistantMessage : undefined}
           title="Add as assistant message"
           disabled={isAdded}
         >
-          {isAdded ? <CheckIcon /> : <PlusIcon />}
+          {isAdded ? checkIcon : plusIcon}
           <span className="text-xs">Add to messages</span>
         </Button>
       </div>
     ) : null;
 
   return (
-    <div className="relative h-full overflow-auto">
+    <div className="relative h-full">
       <div
-        className="h-full overflow-auto rounded-lg bg-muted p-4"
+        className="bg-muted h-full overflow-auto rounded-lg"
         ref={scrollAreaRef}
       >
-        <div className="mb-4 flex w-full items-center">
-          <p className="flex-1 text-xs font-semibold">Output</p>
-          {copyButton}
+        <div className="bg-muted sticky top-0 z-10 p-3">
+          <div className="flex w-full items-center">
+            <p className="flex-1 text-xs font-semibold">Output</p>
+            {copyButton}
+          </div>
         </div>
-        <pre className="whitespace-break-spaces break-words text-xs">
-          {isJson ? outputJson : output}
-        </pre>
-        {outputToolCalls.length > 0
-          ? outputToolCalls.map((toolCall) => (
-              <div className="mt-4" key={toolCall.id}>
-                <ToolCallCard toolCall={toolCall} />
-              </div>
-            ))
-          : null}
+        <div className="px-4">
+          {outputReasoning && !isJson && (
+            <div className="-ml-1">
+              <ThinkingBlock content={outputReasoning} />
+            </div>
+          )}
+          <pre className="text-xs wrap-break-word whitespace-break-spaces">
+            {isJson ? outputJson : output}
+          </pre>
+          {outputToolCalls.length > 0
+            ? outputToolCalls.map((toolCall) => (
+                <div className="mt-4" key={toolCall.id}>
+                  <ToolCallCard toolCall={toolCall} />
+                </div>
+              ))
+            : null}
+        </div>
       </div>
     </div>
   );

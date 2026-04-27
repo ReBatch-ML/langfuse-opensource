@@ -31,7 +31,7 @@ export default function ConfigureRetention() {
   });
   const hasEntitlement = useHasEntitlement("data-retention");
 
-  const form = useForm<z.infer<typeof projectRetentionSchema>>({
+  const form = useForm({
     resolver: zodResolver(projectRetentionSchema),
     defaultValues: {
       retention: project?.retentionDays ?? 0,
@@ -64,29 +64,29 @@ export default function ConfigureRetention() {
     <div>
       <Header title="Data Retention" />
       <Card className="mb-4 p-3">
-        <p className="mb-4 text-sm text-primary">
+        <p className="text-primary mb-4 text-sm">
           Data retention automatically deletes events older than the specified
-          number of days. The value must be 0 or at least 3 days. Set to 0
-          to retain data indefinitely. The deletion happens asynchronously, i.e.
+          number of days. The value must be 0 or at least 3 days. Set to 0 to
+          retain data indefinitely. The deletion happens asynchronously, i.e.
           event may be available for a while after they expired.
         </p>
         {Boolean(form.getValues().retention) &&
         form.getValues().retention !== project?.retentionDays ? (
-          <p className="mb-4 text-sm text-primary">
+          <p className="text-primary mb-4 text-sm">
             Your Project&#39;s retention will be set from &quot;
             {project?.retentionDays ?? "Indefinite"}
             &quot; to &quot;
-            {Number(form.watch().retention) === 0
+            {Number(form.watch("retention")) === 0
               ? "Indefinite"
-              : form.watch().retention}
+              : Number(form.watch("retention"))}
             &quot; days.
           </p>
         ) : !Boolean(project?.retentionDays) ? (
-          <p className="mb-4 text-sm text-primary">
+          <p className="text-primary mb-4 text-sm">
             Your Project retains data indefinitely.
           </p>
         ) : (
-          <p className="mb-4 text-sm text-primary">
+          <p className="text-primary mb-4 text-sm">
             Your Project&#39;s current retention is &quot;
             {project?.retentionDays ?? ""}
             &quot; days.
@@ -94,7 +94,6 @@ export default function ConfigureRetention() {
         )}
         <Form {...form}>
           <form
-            // eslint-disable-next-line @typescript-eslint/no-misused-promises
             onSubmit={form.handleSubmit(onSubmit)}
             className="flex-1"
             id="set-retention-project-form"
@@ -111,13 +110,13 @@ export default function ConfigureRetention() {
                         step="1"
                         placeholder={project?.retentionDays?.toString() ?? ""}
                         {...field}
-                        value={field.value ?? ""}
+                        value={(field.value as number) ?? ""}
                         className="flex-1"
                         disabled={!hasAccess || !hasEntitlement}
                       />
                       {!hasAccess && (
                         <span title="No access">
-                          <LockIcon className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 transform text-muted" />
+                          <LockIcon className="text-muted absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 transform" />
                         </span>
                       )}
                     </div>
@@ -130,7 +129,7 @@ export default function ConfigureRetention() {
               variant="secondary"
               hasAccess={hasAccess}
               hasEntitlement={hasEntitlement}
-              loading={setRetention.isLoading}
+              loading={setRetention.isPending}
               disabled={form.getValues().retention === null}
               className="mt-4"
               type="submit"

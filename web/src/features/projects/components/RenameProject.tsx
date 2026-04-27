@@ -29,7 +29,7 @@ export default function RenameProject() {
     scope: "project:update",
   });
 
-  const form = useForm<z.infer<typeof projectNameSchema>>({
+  const form = useForm({
     resolver: zodResolver(projectNameSchema),
     defaultValues: {
       name: "",
@@ -63,14 +63,14 @@ export default function RenameProject() {
       <Header title="Project Name" />
       <Card className="mb-4 p-3">
         {form.getValues().name !== "" ? (
-          <p className="mb-4 text-sm text-primary">
+          <p className="text-primary mb-4 text-sm">
             Your Project will be renamed from &quot;
             {project?.name ?? ""}
             &quot; to &quot;
             <b>{form.watch().name}</b>&quot;.
           </p>
         ) : (
-          <p className="mb-4 text-sm text-primary">
+          <p className="text-primary mb-4 text-sm">
             Your Project is currently named &quot;
             <b>{project?.name ?? ""}</b>
             &quot;.
@@ -78,7 +78,6 @@ export default function RenameProject() {
         )}
         <Form {...form}>
           <form
-            // eslint-disable-next-line @typescript-eslint/no-misused-promises
             onSubmit={form.handleSubmit(onSubmit)}
             className="flex-1"
             id="rename-project-form"
@@ -98,7 +97,7 @@ export default function RenameProject() {
                       />
                       {!hasAccess && (
                         <span title="No access">
-                          <LockIcon className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 transform text-muted" />
+                          <LockIcon className="text-muted absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 transform" />
                         </span>
                       )}
                     </div>
@@ -111,7 +110,7 @@ export default function RenameProject() {
               <Button
                 variant="secondary"
                 type="submit"
-                loading={renameProject.isLoading}
+                loading={renameProject.isPending}
                 disabled={form.getValues().name === "" || !hasAccess}
                 className="mt-4"
               >

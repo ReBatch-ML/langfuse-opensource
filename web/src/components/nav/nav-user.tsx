@@ -1,6 +1,7 @@
 "use client";
 
 import { ChevronsUpDown } from "lucide-react";
+import Link from "next/link";
 
 import {
   Avatar,
@@ -14,6 +15,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/src/components/ui/dropdown-menu";
 import {
@@ -27,6 +31,8 @@ export type UserNavigationItem = {
   name: string;
   onClick?: () => void;
   content?: React.ReactNode;
+  href?: string;
+  subItems?: UserNavigationItem[];
 };
 
 export type UserNavigationProps = {
@@ -47,6 +53,35 @@ export function NavUser({ user, items }: UserNavigationProps) {
     .map((word) => word[0])
     .join("")
     .toUpperCase();
+
+  const renderMenuItem = (item: UserNavigationItem) => {
+    if (item.subItems?.length) {
+      return (
+        <DropdownMenuSub key={item.name}>
+          <DropdownMenuSubTrigger>
+            {item.content ?? item.name}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            {item.subItems.map(renderMenuItem)}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      );
+    }
+
+    if (item.href) {
+      return (
+        <DropdownMenuItem key={item.name} asChild>
+          <Link href={item.href}>{item.content ?? item.name}</Link>
+        </DropdownMenuItem>
+      );
+    }
+
+    return (
+      <DropdownMenuItem key={item.name} onClick={item.onClick}>
+        {item.content ?? item.name}
+      </DropdownMenuItem>
+    );
+  };
 
   return (
     <SidebarMenu>
@@ -73,7 +108,7 @@ export function NavUser({ user, items }: UserNavigationProps) {
             </SidebarMenuButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent
-            className="w-[--radix-dropdown-menu-trigger-width] min-w-56 rounded-lg"
+            className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-lg"
             side={isMobile ? "bottom" : "right"}
             align="end"
             sideOffset={4}
@@ -95,13 +130,7 @@ export function NavUser({ user, items }: UserNavigationProps) {
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              {items.map((item) => (
-                <DropdownMenuItem key={item.name} onClick={item.onClick}>
-                  {item.content ?? item.name}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuGroup>
+            <DropdownMenuGroup>{items.map(renderMenuItem)}</DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarMenuItem>

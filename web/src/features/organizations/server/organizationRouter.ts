@@ -1,18 +1,26 @@
 import {
   createTRPCRouter,
   protectedOrganizationProcedure,
-  protectedProcedure,
+  authenticatedProcedure,
 } from "@/src/server/api/trpc";
 import { auditLog } from "@/src/features/audit-logs/auditLog";
-import { organizationNameSchema } from "@/src/features/organizations/utils/organizationNameSchema";
+import {
+  organizationOptionalNameSchema,
+  organizationNameSchema,
+} from "@/src/features/organizations/utils/organizationNameSchema";
 import * as z from "zod";
 import { throwIfNoOrganizationAccess } from "@/src/features/rbac/utils/checkOrganizationAccess";
 import { TRPCError } from "@trpc/server";
 import { ApiAuthService } from "@/src/features/public-api/server/apiAuth";
 import { redis } from "@langfuse/shared/src/server";
+import { createBillingServiceFromContext } from "@/src/ee/features/billing/server/stripeBillingService";
+import { isCloudBillingEnabled } from "@/src/ee/features/billing/utils/isCloudBilling";
+import { shouldAutoEnableV4 } from "@/src/features/events/lib/v4Rollout";
+
+import { env } from "@/src/env.mjs";
 
 export const organizationsRouter = createTRPCRouter({
-  create: protectedProcedure
+  create: authenticatedProcedure
     .input(organizationNameSchema)
     .mutation(async ({ input, ctx }) => {
       if (!ctx.session.user.canCreateOrganizations)
@@ -21,16 +29,80 @@ export const organizationsRouter = createTRPCRouter({
           message: "You do not have permission to create organizations",
         });
 
-      const organization = await ctx.prisma.organization.create({
-        data: {
-          name: input.name,
-          organizationMemberships: {
-            create: {
+      const organization = await ctx.prisma.$transaction(async (tx) => {
+        const organizationCountBeforeCreate =
+          await tx.organizationMembership.count({
+            where: {
               userId: ctx.session.user.id,
-              role: "OWNER",
+              ...(env.NEXT_PUBLIC_DEMO_ORG_ID
+                ? { orgId: { not: env.NEXT_PUBLIC_DEMO_ORG_ID } }
+                : {}),
+            },
+          });
+
+        const organization = await tx.organization.create({
+          data: {
+            name: input.name,
+            organizationMemberships: {
+              create: {
+                userId: ctx.session.user.id,
+                role: "OWNER",
+              },
             },
           },
-        },
+        });
+
+        if (organizationCountBeforeCreate === 0) {
+          const isCloudDeployment = Boolean(
+            env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION,
+          );
+
+          if (isCloudDeployment) {
+            const userRolloutState = await tx.user.findUnique({
+              where: { id: ctx.session.user.id },
+              select: {
+                createdAt: true,
+                v4BetaEnabled: true,
+                organizationMemberships: {
+                  select: {
+                    organization: {
+                      select: {
+                        id: true,
+                        createdAt: true,
+                      },
+                    },
+                  },
+                },
+              },
+            });
+
+            if (
+              userRolloutState &&
+              !userRolloutState.v4BetaEnabled &&
+              shouldAutoEnableV4({
+                userCreatedAt: userRolloutState.createdAt,
+                organizations: userRolloutState.organizationMemberships.map(
+                  (membership) => ({
+                    id: membership.organization.id,
+                    createdAt: membership.organization.createdAt,
+                  }),
+                ),
+                excludedOrganizationIds: env.NEXT_PUBLIC_DEMO_ORG_ID
+                  ? [env.NEXT_PUBLIC_DEMO_ORG_ID]
+                  : [],
+              })
+            ) {
+              // This path is both the normal first-org initialization and a
+              // recovery path if signup-side initialization failed earlier.
+              await tx.user.update({
+                where: { id: ctx.session.user.id },
+                data: { v4BetaEnabled: true },
+              });
+            }
+          }
+        }
+
+        return organization;
       });
       await auditLog({
         resourceType: "organization",
@@ -50,9 +122,14 @@ export const organizationsRouter = createTRPCRouter({
     }),
   update: protectedOrganizationProcedure
     .input(
-      organizationNameSchema.extend({
-        orgId: z.string(),
-      }),
+      organizationOptionalNameSchema
+        .extend({
+          orgId: z.string(),
+          aiFeaturesEnabled: z.boolean().optional(),
+        })
+        .refine((data) => data.name || data.aiFeaturesEnabled !== undefined, {
+          message: "At least one of name or aiFeaturesEnabled is required",
+        }),
     )
     .mutation(async ({ input, ctx }) => {
       throwIfNoOrganizationAccess({
@@ -60,6 +137,18 @@ export const organizationsRouter = createTRPCRouter({
         organizationId: input.orgId,
         scope: "organization:update",
       });
+
+      if (
+        input.aiFeaturesEnabled !== undefined &&
+        !env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Natural language filtering is not available in self-hosted deployments.",
+        });
+      }
+
       const beforeOrganization = await ctx.prisma.organization.findFirst({
         where: {
           id: input.orgId,
@@ -71,6 +160,7 @@ export const organizationsRouter = createTRPCRouter({
         },
         data: {
           name: input.name,
+          aiFeaturesEnabled: input.aiFeaturesEnabled,
         },
       });
 
@@ -98,18 +188,51 @@ export const organizationsRouter = createTRPCRouter({
         scope: "organization:delete",
       });
 
-      // count soft and hard deleted projects
-      const countProjects = await ctx.prisma.project.count({
+      // count non-deleted projects
+      const countNonDeletedProjects = await ctx.prisma.project.count({
+        where: {
+          orgId: input.orgId,
+          deletedAt: null,
+        },
+      });
+
+      // count all projects (including soft-deleted)
+      const countAllProjects = await ctx.prisma.project.count({
         where: {
           orgId: input.orgId,
         },
       });
-      if (countProjects > 0) {
+
+      if (countNonDeletedProjects > 0) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message:
             "Please delete or transfer all projects before deleting the organization.",
         });
+      }
+
+      if (countAllProjects > 0) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "Deletion of your projects is still being processed, please try deleting the organization later",
+        });
+      }
+
+      // Attempt to cancel Stripe subscription immediately (Cloud only) before deleting org
+      if (isCloudBillingEnabled()) {
+        try {
+          const stripeBillingService = createBillingServiceFromContext(ctx);
+          await stripeBillingService.cancelImmediatelyAndInvoice(input.orgId);
+        } catch (e) {
+          // If billing cancellation fails for reasons other than no subscription, abort deletion
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message:
+              "Failed to cancel Stripe subscription prior to organization deletion",
+            cause: e as Error,
+          });
+        }
       }
 
       const organization = await ctx.prisma.organization.delete({
@@ -119,7 +242,7 @@ export const organizationsRouter = createTRPCRouter({
       });
 
       // the api keys contain which org they belong to, so we need to remove them from Redis
-      await new ApiAuthService(ctx.prisma, redis).invalidateOrgApiKeys(
+      await new ApiAuthService(ctx.prisma, redis).invalidateCachedOrgApiKeys(
         input.orgId,
       );
 

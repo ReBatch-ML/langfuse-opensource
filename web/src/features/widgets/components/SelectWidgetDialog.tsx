@@ -19,7 +19,9 @@ import {
   TableBody,
   TableCell,
 } from "@/src/components/ui/table";
-import { startCase } from "lodash";
+import startCase from "lodash/startCase";
+import { getChartTypeDisplayName } from "@/src/features/widgets/chart-library/utils";
+import { type DashboardWidgetChartType } from "@langfuse/shared/src/db";
 
 export type WidgetItem = {
   id: string;
@@ -88,14 +90,14 @@ export function SelectWidgetDialog({
 
         <DialogBody>
           <div className="max-h-[400px] overflow-y-auto">
-            {widgets.isLoading ? (
+            {widgets.isPending ? (
               <div className="py-8 text-center">Loading widgets...</div>
             ) : widgets.isError ? (
-              <div className="py-8 text-center text-destructive">
+              <div className="text-destructive py-8 text-center">
                 Error: {widgets.error.message}
               </div>
             ) : widgets.data?.widgets.length === 0 ? (
-              <div className="py-8 text-center text-muted-foreground">
+              <div className="text-muted-foreground py-8 text-center">
                 No widgets found. Create a new widget to get started.
               </div>
             ) : (
@@ -113,41 +115,27 @@ export function SelectWidgetDialog({
                     <TableRow
                       key={widget.id}
                       onClick={() => setSelectedWidgetId(widget.id)}
-                      className={`cursor-pointer hover:bg-muted ${
+                      className={`hover:bg-muted cursor-pointer ${
                         selectedWidgetId === widget.id ? "bg-muted" : ""
                       }`}
                     >
-                      <TableCell className="font-medium">
+                      <TableCell density="comfortable" className="font-medium">
                         {widget.name}
                       </TableCell>
                       <TableCell
+                        density="comfortable"
                         className="truncate"
                         title={widget.description}
                       >
                         {widget.description}
                       </TableCell>
-                      <TableCell>
+                      <TableCell density="comfortable">
                         {startCase(widget.view.toLowerCase())}
                       </TableCell>
-                      <TableCell>
-                        {(() => {
-                          switch (widget.chartType) {
-                            case "LINE_TIME_SERIES":
-                              return "Line Chart (Time Series)";
-                            case "BAR_TIME_SERIES":
-                              return "Bar Chart (Time Series)";
-                            case "HORIZONTAL_BAR":
-                              return "Horizontal Bar Chart (Total Value)";
-                            case "VERTICAL_BAR":
-                              return "Vertical Bar Chart (Total Value)";
-                            case "PIE":
-                              return "Pie Chart (Total Value)";
-                            case "NUMBER":
-                              return "Big Number (Total Value)";
-                            default:
-                              return widget.chartType;
-                          }
-                        })()}
+                      <TableCell density="comfortable">
+                        {getChartTypeDisplayName(
+                          widget.chartType as DashboardWidgetChartType,
+                        )}
                       </TableCell>
                     </TableRow>
                   ))}

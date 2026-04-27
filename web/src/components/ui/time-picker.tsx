@@ -7,6 +7,11 @@ import { type Period } from "./time-picker-utils";
 import { getTimezoneDetails, getShortLocalTimezone } from "@/src/utils/dates";
 import { TimeIcon } from "@/src/components/ui/time-icon";
 import { cn } from "@/src/utils/tailwind";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/src/components/ui/tooltip";
 
 interface TimePickerProps {
   date: Date | undefined;
@@ -25,13 +30,18 @@ export function TimePicker({ date, setDate, className }: TimePickerProps) {
   const secondRef = React.useRef<HTMLInputElement>(null);
   const periodRef = React.useRef<HTMLButtonElement>(null);
 
+  // Sync period state when date prop changes externally (e.g., preset selection)
+  React.useEffect(() => {
+    setPeriod(getInitialPeriod(date));
+  }, [date]);
+
   const shortTimezone = React.useMemo(() => getShortLocalTimezone(), []);
   const timezoneDetails = React.useMemo(() => getTimezoneDetails(), []);
 
   return (
     <div
       className={cn(
-        "flex w-full flex-1 items-center gap-1 rounded-b-md border-t-2 bg-transparent px-3 py-2 text-sm ring-offset-background",
+        "ring-offset-background flex w-full flex-1 items-center gap-1 rounded-b-md border-t-2 bg-transparent px-3 py-2 text-sm",
         className,
       )}
     >
@@ -82,11 +92,15 @@ export function TimePicker({ date, setDate, className }: TimePickerProps) {
           onLeftFocus={() => secondRef.current?.focus()}
         />
       </div>
-      <div className="group relative ml-1">
-        <span>{shortTimezone}</span>
-        <div className="text-s absolute left-1/2 top-full mt-2 hidden -translate-x-1/2 transform whitespace-nowrap rounded bg-card px-2 py-1 text-card-foreground shadow-md ring-1 ring-border group-hover:block">
-          {timezoneDetails}
-        </div>
+      <div className="ml-1 flex items-center">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="text-s whitespace-nowrap">{shortTimezone}</span>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" align="center">
+            {timezoneDetails}
+          </TooltipContent>
+        </Tooltip>
       </div>
     </div>
   );

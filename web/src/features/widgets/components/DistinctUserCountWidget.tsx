@@ -8,14 +8,14 @@ import { DashboardCard } from "@/src/features/dashboard/components/cards/Dashboa
 import { BaseTimeSeriesChart } from "@/src/features/dashboard/components/BaseTimeSeriesChart";
 import { TotalMetric } from "@/src/features/dashboard/components/TotalMetric";
 import { compactNumberFormatter } from "@/src/utils/numbers";
-import { 
+import {
   dashboardDateRangeAggregationSettings,
-  type DashboardDateRangeAggregationOption 
+  type DashboardDateRangeAggregationOption,
 } from "@/src/utils/date-range-utils";
 import { NoDataOrLoading } from "@/src/components/NoDataOrLoading";
-import { 
-  extractTimeSeriesData, 
-  fillMissingValuesAndTransform 
+import {
+  extractTimeSeriesData,
+  fillMissingValuesAndTransform,
 } from "@/src/features/dashboard/components/hooks";
 import { type DatabaseRow } from "@/src/server/api/services/sqlInterface";
 
@@ -107,7 +107,7 @@ export function DistinctUserCountWidget({
 
   const timeSeriesData = useMemo(() => {
     if (!timeSeriesQuery.data) return [];
-    
+
     // Use the helper functions to properly process time series data with dimensions
     const extractedData = extractTimeSeriesData(
       timeSeriesQuery.data as DatabaseRow[],
@@ -119,15 +119,15 @@ export function DistinctUserCountWidget({
         },
       ],
     );
-    
+
     // Group by time and count distinct users per time period
     const groupedByTime = new Map<number, Set<string>>();
-    
+
     extractedData.forEach((chartData, timestamp) => {
       if (!groupedByTime.has(timestamp)) {
         groupedByTime.set(timestamp, new Set());
       }
-      
+
       chartData.forEach((data) => {
         // Extract userId from the label (which is the userId)
         const userId = data.label;
@@ -136,21 +136,23 @@ export function DistinctUserCountWidget({
         }
       });
     });
-    
+
     // Transform to the expected format
-    const result = Array.from(groupedByTime.entries()).map(([timestamp, userIds]) => ({
-      ts: timestamp,
-      values: [
-        {
-          label: "Distinct Users",
-          value: userIds.size,
-        },
-      ],
-    }));
-    
+    const result = Array.from(groupedByTime.entries()).map(
+      ([timestamp, userIds]) => ({
+        ts: timestamp,
+        values: [
+          {
+            label: "Distinct Users",
+            value: userIds.size,
+          },
+        ],
+      }),
+    );
+
     return fillMissingValuesAndTransform(
-      new Map(result.map(item => [item.ts, item.values])),
-      ["Distinct Users"]
+      new Map(result.map((item) => [item.ts, item.values])),
+      ["Distinct Users"],
     );
   }, [timeSeriesQuery.data]);
 
@@ -160,7 +162,9 @@ export function DistinctUserCountWidget({
     <DashboardCard
       className={className}
       title="Distinct Users"
-      isLoading={isLoading || totalCountQuery.isLoading || timeSeriesQuery.isLoading}
+      isLoading={
+        isLoading || totalCountQuery.isLoading || timeSeriesQuery.isLoading
+      }
     >
       <div className="flex flex-col gap-4">
         {/* Total count metric */}
@@ -170,7 +174,7 @@ export function DistinctUserCountWidget({
             description="Total distinct users"
           />
         </div>
-        
+
         {/* Time series chart */}
         {hasData ? (
           <BaseTimeSeriesChart

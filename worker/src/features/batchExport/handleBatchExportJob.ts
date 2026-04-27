@@ -1,9 +1,11 @@
-import { pipeline } from "stream";
+import { pipeline, Transform } from "stream";
 import {
   BatchExportFileFormat,
   BatchExportQuerySchema,
   BatchExportStatus,
+  BatchExportTableName,
   exportOptions,
+  LangfuseNotFoundError,
 } from "@langfuse/shared";
 import { prisma } from "@langfuse/shared/src/db";
 import {
@@ -13,9 +15,21 @@ import {
   type BatchExportJobType,
   logger,
   getCurrentSpan,
+  applyCommentFilters,
+  type CommentObjectType,
 } from "@langfuse/shared/src/server";
 import { env } from "../../env";
-import { getDatabaseReadStream } from "../database-read-stream/getDatabaseReadStream";
+import { getDatabaseReadStreamPaginated } from "../database-read-stream/getDatabaseReadStream";
+import { getObservationStream } from "../database-read-stream/observation-stream";
+import { getTraceStream } from "../database-read-stream/trace-stream";
+import { getEventsStream } from "../database-read-stream/event-stream";
+
+// Map table names to comment object types for preprocessing
+const tableToCommentType: Record<string, CommentObjectType | undefined> = {
+  traces: "TRACE",
+  observations: "OBSERVATION",
+  sessions: "SESSION",
+};
 
 export const handleBatchExportJob = async (
   batchExportJob: BatchExportJobType,
@@ -28,7 +42,9 @@ export const handleBatchExportJob = async (
 
   const { projectId, batchExportId } = batchExportJob;
 
-  logger.info(`Starting batch export for ${projectId} and ${batchExportId}`);
+  logger.info(
+    `[BATCH EXPORT] Starting batch export for ${projectId} and ${batchExportId}`,
+  );
 
   const span = getCurrentSpan();
   if (span) {
@@ -48,13 +64,50 @@ export const handleBatchExportJob = async (
   });
 
   if (!jobDetails) {
-    throw new Error(
+    throw new LangfuseNotFoundError(
       `Job not found for project: ${projectId} and export ${batchExportId}`,
     );
   }
+
+  // Check if the batch export has been cancelled
+  if (jobDetails.status === BatchExportStatus.CANCELLED) {
+    logger.info(
+      `[BATCH EXPORT] Batch export ${batchExportId} has been cancelled. Skipping processing.`,
+    );
+    return; // Exit early without processing
+  }
+
+  // Check if the batch export is older than 30 days
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  if (jobDetails.createdAt < thirtyDaysAgo) {
+    // For old exports, mark as failed with an informative message
+    const improvedExportMessage =
+      "We have improved the batch export feature. Please retry your export to benefit from the latest enhancements.";
+
+    await prisma.batchExport.update({
+      where: {
+        id: batchExportId,
+        projectId,
+      },
+      data: {
+        status: BatchExportStatus.FAILED,
+        finishedAt: new Date(),
+        log: improvedExportMessage,
+      },
+    });
+
+    logger.info(
+      `[BATCH EXPORT] Batch export ${batchExportId} is older than 30 days. Marked as failed with retry message.`,
+    );
+
+    return; // Exit early without processing
+  }
+
   if (jobDetails.status !== BatchExportStatus.QUEUED) {
     logger.warn(
-      `Job ${batchExportId} has invalid status: ${jobDetails.status}. Retrying anyway.`,
+      `[BATCH EXPORT] Job ${batchExportId} has invalid status: ${jobDetails.status}. Retrying anyway.`,
     );
   }
 
@@ -77,20 +130,107 @@ export const handleBatchExportJob = async (
     );
   }
 
+  if (span) {
+    span.setAttribute(
+      "messaging.bullmq.job.input.query",
+      JSON.stringify(parsedQuery.data),
+    );
+  }
+
+  // Process comment filters before creating stream
+  const commentObjectType = tableToCommentType[parsedQuery.data.tableName];
+  let processedFilter = parsedQuery.data.filter ?? [];
+
+  if (commentObjectType) {
+    const { filterState, hasNoMatches } = await applyCommentFilters({
+      filterState: parsedQuery.data.filter ?? [],
+      prisma,
+      projectId,
+      objectType: commentObjectType,
+    });
+
+    if (hasNoMatches) {
+      // No matching items - complete export with empty results
+      logger.info(
+        `[BATCH EXPORT] Batch export ${batchExportId}: comment filter matched no items, completing with empty export`,
+      );
+
+      // Create an empty stream by using a filter that matches nothing
+      processedFilter = [
+        {
+          type: "stringOptions" as const,
+          operator: "any of" as const,
+          column: "id",
+          value: [],
+        },
+      ];
+    } else {
+      processedFilter = filterState;
+    }
+  }
+
   // handle db read stream
-  const dbReadStream = await getDatabaseReadStream({
-    projectId,
-    cutoffCreatedAt: jobDetails.createdAt,
-    ...parsedQuery.data,
-  });
+
+  const dbReadStream =
+    parsedQuery.data.tableName === BatchExportTableName.Observations
+      ? await getObservationStream({
+          projectId,
+          cutoffCreatedAt: jobDetails.createdAt,
+          ...parsedQuery.data,
+          filter: processedFilter,
+          fileFormat: jobDetails.format as BatchExportFileFormat,
+        })
+      : parsedQuery.data.tableName === BatchExportTableName.Traces
+        ? await getTraceStream({
+            projectId,
+            cutoffCreatedAt: jobDetails.createdAt,
+            ...parsedQuery.data,
+            filter: processedFilter,
+          })
+        : parsedQuery.data.tableName === BatchExportTableName.Events
+          ? await getEventsStream({
+              projectId,
+              cutoffCreatedAt: jobDetails.createdAt,
+              ...parsedQuery.data,
+              filter: processedFilter,
+            })
+          : await getDatabaseReadStreamPaginated({
+              projectId,
+              cutoffCreatedAt: jobDetails.createdAt,
+              ...parsedQuery.data,
+              filter: processedFilter,
+            });
 
   // Transform data to desired format
+  let rowCount = 0;
+
+  const loggingTransform = new Transform({
+    objectMode: true,
+    transform(chunk, encoding, callback) {
+      rowCount++;
+      if (rowCount % 5000 === 0) {
+        logger.info(
+          `[BATCH EXPORT] Batch export ${batchExportId}: processed ${rowCount} rows`,
+        );
+      }
+      callback(null, chunk);
+    },
+  });
+
   const fileStream = pipeline(
     dbReadStream,
+    loggingTransform,
     streamTransformations[jobDetails.format as BatchExportFileFormat](),
     (err) => {
       if (err) {
-        logger.error("Getting data from DB and transform failed: ", err);
+        logger.error(
+          "[BATCH EXPORT] Getting data from DB and transform failed: ",
+          err,
+        );
+      } else {
+        logger.info(
+          `[BATCH EXPORT] Batch export ${batchExportId}: completed processing ${rowCount} total rows`,
+        );
       }
     },
   );
@@ -102,13 +242,13 @@ export const handleBatchExportJob = async (
   const expiresInSeconds =
     env.BATCH_EXPORT_DOWNLOAD_LINK_EXPIRATION_HOURS * 3600;
 
-  // Stream upload results to S3
+  // Stream upload results to blob storage
   const bucketName = env.LANGFUSE_S3_BATCH_EXPORT_BUCKET;
   if (!bucketName) {
     throw new Error("No S3 bucket configured for exports.");
   }
 
-  const { signedUrl } = await StorageServiceFactory.getInstance({
+  const storageParams = {
     bucketName,
     accessKeyId: env.LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID,
     secretAccessKey: env.LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY,
@@ -118,15 +258,24 @@ export const handleBatchExportJob = async (
     forcePathStyle: env.LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE === "true",
     awsSse: env.LANGFUSE_S3_BATCH_EXPORT_SSE,
     awsSseKmsKeyId: env.LANGFUSE_S3_BATCH_EXPORT_SSE_KMS_KEY_ID,
-  }).uploadFile({
+  };
+
+  const storageService = StorageServiceFactory.getInstance(storageParams);
+
+  await storageService.uploadFileBuffered({
     fileName,
     fileType:
       exportOptions[jobDetails.format as BatchExportFileFormat].fileType,
     data: fileStream,
-    expiresInSeconds,
+    partSizeBytes: env.BATCH_EXPORT_S3_PART_SIZE_MIB * 1024 * 1024,
   });
 
-  logger.info(`Batch export file ${fileName} uploaded to S3`);
+  const signedUrl = await storageService.getSignedUrl(
+    fileName,
+    expiresInSeconds,
+  );
+
+  logger.info(`[BATCH EXPORT] Batch export file ${fileName} uploaded`);
 
   // Update job status
   await prisma.batchExport.update({
@@ -159,7 +308,7 @@ export const handleBatchExportJob = async (
     });
 
     logger.info(
-      `Batch export with id ${batchExportId} for project ${projectId} successful. Email sent to user ${user.id}`,
+      `[BATCH EXPORT] Batch export with id ${batchExportId} for project ${projectId} successful. Email sent to user ${user.id}`,
     );
   }
 };

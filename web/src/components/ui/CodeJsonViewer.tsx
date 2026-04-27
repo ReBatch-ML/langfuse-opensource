@@ -1,6 +1,13 @@
 import { useMemo, useState } from "react";
 import { Button } from "@/src/components/ui/button";
-import { Check, ChevronsDownUp, ChevronsUpDown, Copy } from "lucide-react";
+import {
+  Check,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Copy,
+  FoldVertical,
+  UnfoldVertical,
+} from "lucide-react";
 import { cn } from "@/src/utils/tailwind";
 import { default as React18JsonView } from "react18-json-view";
 import "react18-json-view/src/dark.css";
@@ -12,36 +19,57 @@ import { useMarkdownContext } from "@/src/features/theming/useMarkdownContext";
 import { type MediaReturnType } from "@/src/features/media/validation";
 import { LangfuseMediaView } from "@/src/components/ui/LangfuseMediaView";
 import { MarkdownJsonViewHeader } from "@/src/components/ui/MarkdownJsonView";
-import { renderContentWithPromptButtons } from "@/src/features/prompts/components/renderContentWithPromptButtons";
+import {
+  renderRichPromptContent,
+  usePromptReferenceProjectId,
+} from "@/src/components/ui/PromptReferences";
+import { copyTextToClipboard } from "@/src/utils/clipboard";
+import { useCopyToClipboard } from "@/src/hooks/useCopyToClipboard";
 
-const IO_TABLE_CHAR_LIMIT = 10000;
+export const IO_TABLE_CHAR_LIMIT = 10000;
 
 export function JSONView(props: {
   canEnableMarkdown?: boolean;
   json?: unknown;
   title?: string;
+  hideTitle?: boolean;
   className?: string;
   isLoading?: boolean;
   codeClassName?: string;
   collapseStringsAfterLength?: number | null;
   media?: MediaReturnType[];
   scrollable?: boolean;
-  projectIdForPromptButtons?: string;
+  borderless?: boolean;
   controlButtons?: React.ReactNode;
+  externalJsonCollapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   // some users ingest stringified json nested in json, parse it
   const parsedJson = useMemo(() => deepParseJson(props.json), [props.json]);
   const { resolvedTheme } = useTheme();
   const { setIsMarkdownEnabled } = useMarkdownContext();
   const capture = usePostHogClientCapture();
+  const promptReferenceProjectId = usePromptReferenceProjectId();
+  const [internalCollapsed, setInternalCollapsed] = useState(false);
 
   const collapseStringsAfterLength =
     props.collapseStringsAfterLength === null
       ? 100_000_000 // if null, show all (100M chars)
       : (props.collapseStringsAfterLength ?? 500);
 
-  const handleOnCopy = () => {
-    void navigator.clipboard.writeText(stringifyJsonNode(parsedJson));
+  const isCollapsed = props.externalJsonCollapsed ?? internalCollapsed;
+
+  const handleOnCopy = (event?: React.MouseEvent<HTMLButtonElement>) => {
+    if (event) {
+      event.preventDefault();
+    }
+    const textToCopy = stringifyJsonNode(parsedJson);
+    void copyTextToClipboard(textToCopy);
+
+    // Keep focus on the copy button to prevent focus shifting
+    if (event) {
+      event.currentTarget.focus();
+    }
   };
 
   const handleOnValueChange = () => {
@@ -51,55 +79,75 @@ export function JSONView(props: {
     });
   };
 
+  const handleToggleCollapse = () => {
+    if (props.onToggleCollapse) {
+      props.onToggleCollapse();
+    } else {
+      setInternalCollapsed(!internalCollapsed);
+    }
+  };
+
   const body = (
     <>
       <div
         className={cn(
-          "flex gap-2 whitespace-pre-wrap break-words p-3 text-xs",
+          "io-message-content flex gap-2 text-xs wrap-break-word whitespace-pre-wrap",
+          props.borderless ? "" : "p-2",
           props.title === "assistant" || props.title === "Output"
             ? "bg-accent-light-green dark:border-accent-dark-green"
             : "",
           props.title === "system" || props.title === "Input"
             ? "bg-primary-foreground"
             : "",
-          props.scrollable ? "" : "rounded-sm border",
+          props.scrollable || props.borderless ? "" : "rounded-sm border",
           props.codeClassName,
         )}
       >
         {props.isLoading ? (
           <Skeleton className="h-3 w-3/4" />
-        ) : props.projectIdForPromptButtons ? (
-          <code className="whitespace-pre-wrap break-words">
-            {renderContentWithPromptButtons(
-              props.projectIdForPromptButtons,
-              String(parsedJson),
-            )}
+        ) : promptReferenceProjectId && typeof parsedJson === "string" ? (
+          <code
+            className="wrap-break-word whitespace-pre-wrap"
+            dir="auto"
+            style={{ unicodeBidi: "plaintext" }}
+          >
+            {renderRichPromptContent(parsedJson)}
           </code>
         ) : (
-          <React18JsonView
-            src={parsedJson}
-            theme="github"
-            dark={resolvedTheme === "dark"}
-            collapseObjectsAfterLength={20}
-            collapseStringsAfterLength={collapseStringsAfterLength}
-            collapseStringMode="word"
-            customizeCollapseStringUI={(fullSTring, truncated) =>
-              truncated ? (
-                <div className="opacity-50">{`\n...expand (${Math.max(fullSTring.length - collapseStringsAfterLength, 0)} more characters)`}</div>
-              ) : (
-                ""
-              )
-            }
-            displaySize={"collapsed"}
-            matchesURL={true}
-            customizeCopy={(node) => stringifyJsonNode(node)}
-            className="w-full"
-          />
+          <div
+            onClick={() => {
+              // If externally collapsed and user clicks to expand, sync the state
+              if (props.externalJsonCollapsed && props.onToggleCollapse) {
+                props.onToggleCollapse();
+              }
+            }}
+          >
+            <React18JsonView
+              src={parsedJson}
+              theme="github"
+              dark={resolvedTheme === "dark"}
+              collapsed={isCollapsed ? 1 : false}
+              collapseObjectsAfterLength={isCollapsed ? 0 : 20}
+              collapseStringsAfterLength={collapseStringsAfterLength}
+              collapseStringMode="word"
+              customizeCollapseStringUI={(fullSTring, truncated) =>
+                truncated ? (
+                  <div className="opacity-50">{`\n...expand (${Math.max(fullSTring.length - collapseStringsAfterLength, 0)} more characters)`}</div>
+                ) : (
+                  ""
+                )
+              }
+              displaySize={isCollapsed ? "collapsed" : "expanded"}
+              matchesURL={true}
+              customizeCopy={(node) => stringifyJsonNode(node)}
+              className="w-full"
+            />
+          </div>
         )}
       </div>
       {props.media && props.media.length > 0 && (
         <>
-          <div className="mx-3 border-t px-2 py-1 text-xs text-muted-foreground">
+          <div className="text-muted-foreground my-1 px-0 py-1 text-xs">
             Media
           </div>
           <div className="flex flex-wrap gap-2 p-4 pt-1">
@@ -124,13 +172,30 @@ export function JSONView(props: {
         props.scrollable ? "overflow-hidden" : "",
       )}
     >
-      {props.title ? (
+      {props.title && !props.hideTitle ? (
         <MarkdownJsonViewHeader
           title={props.title}
           canEnableMarkdown={props.canEnableMarkdown ?? false}
           handleOnValueChange={handleOnValueChange}
           handleOnCopy={handleOnCopy}
-          controlButtons={props.controlButtons}
+          controlButtons={
+            <>
+              {props.controlButtons}
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={handleToggleCollapse}
+                className="hover:bg-border -mr-2"
+                title={isCollapsed ? "Expand all" : "Collapse all"}
+              >
+                {isCollapsed ? (
+                  <UnfoldVertical className="h-3 w-3" />
+                ) : (
+                  <FoldVertical className="h-3 w-3" />
+                )}
+              </Button>
+            </>
+          }
         />
       ) : null}
       {props.scrollable ? (
@@ -148,25 +213,57 @@ export function JSONView(props: {
 
 export function CodeView(props: {
   content: string | React.ReactNode[] | undefined | null;
+  originalContent?: string;
   className?: string;
   defaultCollapsed?: boolean;
   title?: string;
   scrollable?: boolean;
+  copiedToClipboardMessage?: string;
 }) {
-  const [isCopied, setIsCopied] = useState(false);
+  const { copiedToClipboardMessage } = props;
+
   const [isCollapsed, setCollapsed] = useState(props.defaultCollapsed);
 
-  const handleCopy = () => {
-    setIsCopied(true);
-    void navigator.clipboard.writeText(
-      typeof props.content === "string"
+  const { copy, isCopied } = useCopyToClipboard({
+    successDuration: copiedToClipboardMessage ? 3_000 : 1_000,
+  });
+
+  const handleCopy = async (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    const button = event.currentTarget;
+    const content =
+      props.originalContent ??
+      (typeof props.content === "string"
         ? props.content
-        : (props.content?.join("\n") ?? ""),
-    );
-    setTimeout(() => setIsCopied(false), 1000);
+        : (props.content?.join("\n") ?? ""));
+
+    try {
+      await copy(content);
+    } catch {
+      // Clipboard writes can be rejected when the browser denies permission.
+    }
+
+    if (button) {
+      // Keep focus on the copy button to prevent focus shifting
+      // Note: the original button might no longer be in the DOM if React re-rendered the component after the state update.
+      button.focus();
+    }
   };
 
   const handleShowAll = () => setCollapsed(!isCollapsed);
+
+  const CopySuccessIcon = useMemo(() => {
+    return (
+      <div className="animate-appear relative h-3">
+        <Check className="h-3 w-3" />
+        {copiedToClipboardMessage && (
+          <div className="text-secondary-foreground absolute top-0 right-0 mr-6 h-full max-w-[60vw] transform truncate overflow-hidden text-right text-sm leading-none whitespace-nowrap">
+            {copiedToClipboardMessage}
+          </div>
+        )}
+      </div>
+    );
+  }, [copiedToClipboardMessage]);
 
   return (
     <div
@@ -176,9 +273,9 @@ export function CodeView(props: {
         props.scrollable && "max-h-full min-h-0",
       )}
     >
-      <div className="my-1 flex flex-shrink-0 items-center justify-between pl-1">
+      <>
         {props.title ? (
-          <>
+          <div className="my-1 flex shrink-0 items-center justify-between pl-1">
             <div className="text-sm font-medium">{props.title}</div>
             <Button
               variant="ghost"
@@ -186,15 +283,11 @@ export function CodeView(props: {
               onClick={handleCopy}
               className=""
             >
-              {isCopied ? (
-                <Check className="h-3 w-3" />
-              ) : (
-                <Copy className="h-3 w-3" />
-              )}
+              {isCopied ? CopySuccessIcon : <Copy className="h-3 w-3" />}
             </Button>
-          </>
+          </div>
         ) : undefined}
-      </div>
+      </>
       <div
         className={cn(
           "relative flex flex-col gap-2 rounded-md border",
@@ -206,21 +299,19 @@ export function CodeView(props: {
             variant="secondary"
             size="icon-xs"
             onClick={handleCopy}
-            className="absolute right-2 top-2 z-10"
+            className="absolute top-2 right-2 z-10"
           >
-            {isCopied ? (
-              <Check className="h-3 w-3" />
-            ) : (
-              <Copy className="h-3 w-3" />
-            )}
+            {isCopied ? CopySuccessIcon : <Copy className="h-3 w-3" />}
           </Button>
         )}
         <code
           className={cn(
-            "relative flex-1 whitespace-pre-wrap break-all px-4 py-3 font-mono text-xs",
+            "relative flex-1 px-4 py-3 font-mono text-xs wrap-break-word whitespace-pre-wrap",
             isCollapsed ? `line-clamp-6` : "block",
             props.scrollable ? "overflow-y-auto" : "",
           )}
+          dir="auto"
+          style={{ unicodeBidi: "plaintext" }}
         >
           {props.content}
         </code>
@@ -240,83 +331,32 @@ export function CodeView(props: {
   );
 }
 
-export const IOTableCell = ({
-  data,
-  isLoading = false,
-  className,
-  singleLine = false,
-}: {
-  data: unknown;
-  isLoading?: boolean;
-  className?: string;
-  singleLine?: boolean;
-}) => {
-  if (isLoading) {
-    return <JsonSkeleton className="h-full w-full overflow-hidden px-2 py-1" />;
-  }
-
-  const stringifiedJson = data ? stringifyJsonNode(data) : undefined;
-
-  // perf: truncate to IO_TABLE_CHAR_LIMIT characters as table becomes unresponsive attempting to render large JSONs with high levels of nesting
-  const shouldTruncate =
-    stringifiedJson && stringifiedJson.length > IO_TABLE_CHAR_LIMIT;
-
-  return (
-    <>
-      {singleLine ? (
-        <div
-          className={cn(
-            "ph-no-capture h-full w-full self-stretch overflow-hidden overflow-y-auto truncate rounded-sm border px-2 py-0.5",
-            className,
-          )}
-        >
-          {stringifiedJson}
-        </div>
-      ) : shouldTruncate ? (
-        <div className="ph-no-capture grid h-full grid-cols-1">
-          <JSONView
-            json={
-              stringifiedJson.slice(0, IO_TABLE_CHAR_LIMIT) +
-              `...[truncated ${stringifiedJson.length - IO_TABLE_CHAR_LIMIT} characters]`
-            }
-            className={cn("h-full w-full self-stretch rounded-sm", className)}
-            codeClassName="py-1 px-2 min-h-0 h-full overflow-y-auto"
-            collapseStringsAfterLength={null} // in table, show full strings as row height is fixed
-          />
-          <div className="text-xs text-muted-foreground">
-            Content was truncated.
-          </div>
-        </div>
-      ) : (
-        <JSONView
-          json={stringifiedJson}
-          className={cn(
-            "ph-no-capture h-full w-full self-stretch rounded-sm",
-            className,
-          )}
-          codeClassName="py-1 px-2 min-h-0 h-full overflow-y-auto"
-          collapseStringsAfterLength={null} // in table, show full strings as row height is fixed
-        />
-      )}
-    </>
-  );
-};
-
 export const JsonSkeleton = ({
-  className,
   numRows = 10,
+  borderless = false,
+  className,
 }: {
   numRows?: number;
+  borderless?: boolean;
   className?: string;
 }) => {
+  const isSingleLine = numRows === 1;
+
   return (
-    <div className={cn("w-[400px] rounded-md border", className)}>
+    <div
+      className={cn(
+        isSingleLine ? "w-full" : "w-[400px]",
+        "rounded-md",
+        borderless ? "" : "border",
+        className,
+      )}
+    >
       <div className="flex flex-col gap-1">
         {[...Array<number>(numRows)].map((_, i) => (
           <Skeleton
             className={cn(
               "h-4 w-full",
-              i === numRows - 1 ? "w-3/4" : undefined,
+              !isSingleLine && i === numRows - 1 ? "w-3/4" : undefined,
             )}
             key={i}
           />
@@ -326,7 +366,8 @@ export const JsonSkeleton = ({
   );
 };
 
-function stringifyJsonNode(node: unknown) {
+// TODO: deduplicate with PrettyJsonView.tsx
+export function stringifyJsonNode(node: unknown) {
   // return single string nodes without quotes
   if (typeof node === "string") {
     return node;
@@ -335,7 +376,7 @@ function stringifyJsonNode(node: unknown) {
   try {
     return JSON.stringify(
       node,
-      (key, value) => {
+      (_key, value) => {
         switch (typeof value) {
           case "bigint":
             return String(value) + "n";

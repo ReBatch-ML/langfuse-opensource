@@ -1,10 +1,17 @@
 import { createClient } from "@clickhouse/client";
 import { env } from "../../env";
+import { VERSION } from "../../constants/VERSION";
 import { NodeClickHouseClientConfigOptions } from "@clickhouse/client/dist/config";
 import { getCurrentSpan } from "../instrumentation";
 import { propagation, context } from "@opentelemetry/api";
+import { ClickHouseLogger, mapLogLevel } from "./clickhouse-logger";
 
 export type ClickhouseClientType = ReturnType<typeof createClient>;
+
+export type PreferredClickhouseService =
+  | "ReadWrite"
+  | "ReadOnly"
+  | "EventsReadOnly";
 
 /**
  * ClickHouseClientManager provides a singleton pattern for managing ClickHouse clients.
@@ -35,21 +42,49 @@ export class ClickHouseClientManager {
    * @param opts Client parameters
    * @returns String hash key
    */
-  private generateClientSettingsKey(
+  private generateClientSettings(
     opts: NodeClickHouseClientConfigOptions,
-  ): string {
+    preferredClickhouseService: PreferredClickhouseService = "ReadWrite",
+  ): NodeClickHouseClientConfigOptions {
     const keyParams = {
-      url: env.CLICKHOUSE_URL,
+      url: this.getClickhouseUrl(preferredClickhouseService),
       username: env.CLICKHOUSE_USER,
       password: env.CLICKHOUSE_PASSWORD,
       database: env.CLICKHOUSE_DB,
-      http_headers: opts?.http_headers,
+      http_headers: opts?.http_headers ?? {},
       settings: opts?.clickhouse_settings,
-      request_timeout: opts?.request_timeout ?? 30000,
+      ...(opts.request_timeout
+        ? { request_timeout: opts.request_timeout }
+        : {}),
+
       // Include any other relevant config options
     };
-    return JSON.stringify(keyParams);
+    return keyParams;
   }
+
+  private generateClientSettingsKey(
+    settings: NodeClickHouseClientConfigOptions,
+  ): string {
+    return JSON.stringify(settings);
+  }
+
+  private getClickhouseUrl = (
+    preferredClickhouseService: PreferredClickhouseService,
+  ) => {
+    switch (preferredClickhouseService) {
+      case "ReadWrite":
+        return env.CLICKHOUSE_URL;
+      case "EventsReadOnly":
+        return (
+          env.CLICKHOUSE_EVENTS_READ_ONLY_URL ||
+          env.CLICKHOUSE_READ_ONLY_URL ||
+          env.CLICKHOUSE_URL
+        );
+      case "ReadOnly":
+      default:
+        return env.CLICKHOUSE_READ_ONLY_URL || env.CLICKHOUSE_URL;
+    }
+  };
 
   /**
    * Get or create a client based on the provided parameters
@@ -58,18 +93,22 @@ export class ClickHouseClientManager {
    */
   public getClient(
     opts: NodeClickHouseClientConfigOptions,
+    preferredClickhouseService: PreferredClickhouseService = "ReadWrite",
   ): ClickhouseClientType {
-    const key = this.generateClientSettingsKey(opts);
+    const settings = this.generateClientSettings(
+      opts,
+      preferredClickhouseService,
+    );
+    const key = this.generateClientSettingsKey(settings);
     if (!this.clientMap.has(key)) {
-      const headers = opts?.http_headers ?? {};
       const activeSpan = getCurrentSpan();
       if (activeSpan) {
-        propagation.inject(context.active(), headers);
+        propagation.inject(context.active(), settings.http_headers);
       }
 
       const cloudOptions: Record<string, unknown> = {};
       if (
-        ["STAGING", "EU", "US", "HIPAA"].includes(
+        ["STAGING", "EU", "US", "HIPAA", "JP"].includes(
           env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION ?? "",
         )
       ) {
@@ -78,16 +117,42 @@ export class ClickHouseClientManager {
 
       const client = createClient({
         ...opts,
-        url: env.CLICKHOUSE_URL,
-        username: env.CLICKHOUSE_USER,
-        password: env.CLICKHOUSE_PASSWORD,
-        database: env.CLICKHOUSE_DB,
-        http_headers: headers,
+        ...settings,
+        application: `langfuse/${VERSION.replace("v", "")}`,
         keep_alive: {
           idle_socket_ttl: env.CLICKHOUSE_KEEP_ALIVE_IDLE_SOCKET_TTL,
         },
         max_open_connections: env.CLICKHOUSE_MAX_OPEN_CONNECTIONS,
+        log: {
+          LoggerClass: ClickHouseLogger,
+          level: mapLogLevel(env.LANGFUSE_LOG_LEVEL ?? "info"),
+        },
         clickhouse_settings: {
+          // Overwrite async insert settings to tune throughput
+          ...(env.CLICKHOUSE_ASYNC_INSERT_MAX_DATA_SIZE
+            ? {
+                async_insert_max_data_size:
+                  env.CLICKHOUSE_ASYNC_INSERT_MAX_DATA_SIZE,
+              }
+            : {}),
+          ...(env.CLICKHOUSE_ASYNC_INSERT_BUSY_TIMEOUT_MS
+            ? {
+                async_insert_busy_timeout_ms:
+                  env.CLICKHOUSE_ASYNC_INSERT_BUSY_TIMEOUT_MS,
+              }
+            : {}),
+          ...(env.CLICKHOUSE_ASYNC_INSERT_BUSY_TIMEOUT_MIN_MS
+            ? {
+                async_insert_busy_timeout_min_ms:
+                  env.CLICKHOUSE_ASYNC_INSERT_BUSY_TIMEOUT_MIN_MS,
+              }
+            : {}),
+          ...(env.CLICKHOUSE_LIGHTWEIGHT_DELETE_MODE !== "alter_update"
+            ? {
+                lightweight_delete_mode: env.CLICKHOUSE_LIGHTWEIGHT_DELETE_MODE,
+                update_parallel_mode: env.CLICKHOUSE_UPDATE_PARALLEL_MODE,
+              }
+            : {}),
           ...cloudOptions,
           ...opts.clickhouse_settings,
           async_insert: 1,
@@ -95,13 +160,10 @@ export class ClickHouseClientManager {
           ...(opts.request_timeout && opts.request_timeout > 30000
             ? {
                 send_progress_in_http_headers: 1,
-                http_headers_progress_interval_ms: "25000", // UInt64, should be passed as a string
+                http_headers_progress_interval_ms: "10000", // UInt64, should be passed as a string
               }
             : {}),
         },
-        ...(opts.request_timeout
-          ? { request_timeout: opts.request_timeout }
-          : {}),
       });
 
       this.clientMap.set(key, client);
@@ -122,8 +184,14 @@ export class ClickHouseClientManager {
   }
 }
 
-export const clickhouseClient = (opts?: NodeClickHouseClientConfigOptions) => {
-  return ClickHouseClientManager.getInstance().getClient(opts ?? {});
+export const clickhouseClient = (
+  opts?: NodeClickHouseClientConfigOptions,
+  preferredClickhouseService: PreferredClickhouseService = "ReadWrite",
+) => {
+  return ClickHouseClientManager.getInstance().getClient(
+    opts ?? {},
+    preferredClickhouseService,
+  );
 };
 
 /**

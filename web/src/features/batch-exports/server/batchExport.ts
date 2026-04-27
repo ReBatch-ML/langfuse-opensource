@@ -30,7 +30,7 @@ export const batchExportRouter = createTRPCRouter({
         });
 
         const { projectId, query, format, name } = input;
-        logger.info("[TRPC] Creating export job", { job: input });
+        logger.info("[BATCH EXPORT] Creating export job", { job: input });
         const userId = ctx.session.user.id;
 
         // Create export job
@@ -66,7 +66,7 @@ export const batchExportRouter = createTRPCRouter({
           },
         });
       } catch (e) {
-        logger.error(e);
+        logger.error("[BATCH EXPORT] Failed to create export job", e);
         if (e instanceof TRPCError) {
           throw e;
         }
@@ -75,6 +75,25 @@ export const batchExportRouter = createTRPCRouter({
           message: "Creating export job failed.",
         });
       }
+    }),
+  cancel: protectedProjectProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        batchExportId: z.string(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      throwIfNoProjectAccess({
+        session: ctx.session,
+        projectId: input.projectId,
+        scope: "batchExports:create",
+      });
+
+      await ctx.prisma.batchExport.update({
+        where: { id: input.batchExportId, projectId: input.projectId },
+        data: { status: BatchExportStatus.CANCELLED },
+      });
     }),
   all: protectedProjectProcedure
     .input(

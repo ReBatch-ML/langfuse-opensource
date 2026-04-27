@@ -5,7 +5,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/src/components/ui/popover";
-import { Button } from "@/src/components/ui/button";
+import { Button, type ButtonProps } from "@/src/components/ui/button";
 import { LockIcon, TrashIcon } from "lucide-react";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
 import { type ProjectScope } from "@/src/features/rbac/constants/projectAccessRights";
@@ -29,7 +29,7 @@ export type DeleteButtonProps = {
 };
 
 type BaseDeleteButtonProps = Omit<DeleteButtonProps, "itemId"> & {
-  variant?: "outline" | "ghost";
+  variant?: ButtonProps["variant"];
   scope: NonNullable<DeleteButtonProps["scope"]>;
   invalidateFunc: NonNullable<DeleteButtonProps["invalidateFunc"]>;
   captureDeleteOpen: (
@@ -93,7 +93,7 @@ export function DeleteButton({
     <Popover key={itemId ?? "delete-action"}>
       <PopoverTrigger asChild>
         <Button
-          variant={variant ?? (icon ? "outline" : "ghost")}
+          variant={variant ?? (icon ? "outline-solid" : "ghost")}
           size={icon ? "icon" : "default"}
           disabled={!hasAccess || !enabled}
           onClick={(e) => {
@@ -117,10 +117,10 @@ export function DeleteButton({
       </PopoverTrigger>
       <PopoverContent onClick={(e) => e.stopPropagation()}>
         <h2 className="text-md mb-3 font-semibold">Please confirm</h2>
-        <p className="mb-3 text-sm">
+        <p className="mb-3 max-w-72 text-sm">
           {customDeletePrompt ??
-            `This action cannot be undone and removes all the data associated with
-            this ${entityToDeleteName}.`}
+            `This action cannot be undone. It removes all the data associated with
+            this ${entityToDeleteName}. If this is the project default, it will be deleted for all users.`}
         </p>
         {deleteConfirmation && (
           <div className="mb-4 grid w-full gap-1.5">
@@ -179,7 +179,7 @@ export function DeleteTraceButton(props: DeleteButtonProps) {
     showSuccessToast({
       title: "Trace deleted",
       description:
-        "Selected trace will be deleted. Traces are removed asynchronously and may continue to be visible for up to 15 minutes.",
+        "Selected trace will be deleted. Traces are removed asynchronously and may continue to be visible for up to 24 hours.",
     });
     onSuccess();
   };
@@ -201,7 +201,7 @@ export function DeleteTraceButton(props: DeleteButtonProps) {
       }
       entityToDeleteName="trace"
       executeDeleteMutation={executeDeleteMutation}
-      isDeleteMutationLoading={traceMutation.isLoading}
+      isDeleteMutationLoading={traceMutation.isPending}
       enabled={hasTraceDeletionEntitlement}
     />
   );
@@ -244,7 +244,7 @@ export function DeleteDatasetButton(props: DeleteButtonProps) {
       }
       entityToDeleteName="dataset"
       executeDeleteMutation={executeDeleteMutation}
-      isDeleteMutationLoading={datasetMutation.isLoading}
+      isDeleteMutationLoading={datasetMutation.isPending}
     />
   );
 }
@@ -287,7 +287,7 @@ export function DeleteDashboardButton(props: DeleteButtonProps) {
       }
       entityToDeleteName="dashboard"
       executeDeleteMutation={executeDeleteMutation}
-      isDeleteMutationLoading={dashboardMutation.isLoading}
+      isDeleteMutationLoading={dashboardMutation.isPending}
     />
   );
 }
@@ -338,9 +338,10 @@ export function DeleteEvalConfigButton(props: DeleteButtonProps) {
           source: isTableAction ? "table-single-row" : "eval config detail",
         })
       }
+      customDeletePrompt="This action cannot be undone and removes all logs associated with this running evaluator. Scores produced by this evaluator will not be deleted."
       entityToDeleteName="running evaluator"
       executeDeleteMutation={executeDeleteMutation}
-      isDeleteMutationLoading={evaluatorMutation.isLoading}
+      isDeleteMutationLoading={evaluatorMutation.isPending}
     />
   );
 }
@@ -355,7 +356,7 @@ export function DeleteEvaluationModelButton(
     invalidateFunc = () => void utils.defaultLlmModel.invalidate(),
   } = props;
 
-  const { mutateAsync: deleteDefaultModel, isLoading } =
+  const { mutateAsync: deleteDefaultModel, isPending } =
     api.defaultLlmModel.deleteDefaultModel.useMutation({
       onSuccess: () => {
         showSuccessToast({
@@ -398,7 +399,7 @@ export function DeleteEvaluationModelButton(
       customDeletePrompt="Deleting this model might cause running evaluators to fail. Please make sure you have no running evaluators relying on this model."
       deleteConfirmation="delete"
       executeDeleteMutation={executeDeleteMutation}
-      isDeleteMutationLoading={isLoading}
+      isDeleteMutationLoading={isPending}
     />
   );
 }

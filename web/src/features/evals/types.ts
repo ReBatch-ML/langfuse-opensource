@@ -7,7 +7,7 @@ export enum EvalReferencedEvaluators {
 }
 
 export const EvaluatorStatus = JobConfigState;
-export const EvaluatorStatusSchema = z.nativeEnum(EvaluatorStatus);
+export const EvaluatorStatusSchema = z.enum(EvaluatorStatus);
 export type EvaluatorStatusType = z.infer<typeof EvaluatorStatusSchema>;
 
 export type PartialConfig = Pick<
@@ -19,6 +19,7 @@ export type PartialConfig = Pick<
   | "sampling"
   | "delay"
   | "timeScope"
+  | "status"
 > & { id?: string };
 
 export const RAGAS_TEMPLATE_PREFIX = "__ragas__";

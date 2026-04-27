@@ -4,10 +4,14 @@ import Page from "@/src/components/layouts/page";
 import { DatasetActionButton } from "@/src/features/datasets/components/DatasetActionButton";
 import { api } from "@/src/utils/api";
 import { DatasetsOnboarding } from "@/src/components/onboarding/DatasetsOnboarding";
+import { useQueryParam, StringParam } from "use-query-params";
+import { useExperimentAccess } from "@/src/features/experiments/hooks/useExperimentAccess";
+import { ExperimentsBetaSwitch } from "@/src/features/experiments/components/ExperimentsBetaSwitch";
 
 export default function Datasets() {
   const router = useRouter();
   const projectId = router.query.projectId as string;
+  const [currentFolderPath] = useQueryParam("folder", StringParam);
 
   // Check if the project has any datasets
   const { data: hasAnyDataset, isLoading } = api.datasets.hasAny.useQuery(
@@ -22,7 +26,31 @@ export default function Datasets() {
     },
   );
 
+  const {
+    canUseExperimentsBetaToggle,
+    isExperimentsBetaEnabled,
+    setExperimentsBetaEnabled,
+  } = useExperimentAccess();
+
   const showOnboarding = !isLoading && !hasAnyDataset;
+
+  if (showOnboarding) {
+    return (
+      <Page
+        headerProps={{
+          title: "Datasets",
+          help: {
+            description:
+              "Datasets in Langfuse are a collection of inputs (and expected outputs) of an LLM application. They are used to benchmark new releases before deployment to production. See docs to learn more.",
+            href: "https://langfuse.com/docs/evaluation/dataset-runs/datasets",
+          },
+        }}
+        scrollable
+      >
+        <DatasetsOnboarding projectId={projectId} />
+      </Page>
+    );
+  }
 
   return (
     <Page
@@ -31,20 +59,24 @@ export default function Datasets() {
         help: {
           description:
             "Datasets in Langfuse are a collection of inputs (and expected outputs) of an LLM application. They are used to benchmark new releases before deployment to production. See docs to learn more.",
-          href: "https://langfuse.com/docs/datasets",
+          href: "https://langfuse.com/docs/evaluation/dataset-runs/datasets",
         },
+        actionButtonsLeft: canUseExperimentsBetaToggle ? (
+          <ExperimentsBetaSwitch
+            enabled={isExperimentsBetaEnabled}
+            onEnabledChange={setExperimentsBetaEnabled}
+          />
+        ) : undefined,
         actionButtonsRight: (
-          <DatasetActionButton projectId={projectId} mode="create" />
+          <DatasetActionButton
+            projectId={projectId}
+            mode="create"
+            folderPrefix={currentFolderPath || undefined}
+          />
         ),
       }}
-      scrollable={showOnboarding}
     >
-      {/* Show onboarding screen if project has no datasets */}
-      {showOnboarding ? (
-        <DatasetsOnboarding projectId={projectId} />
-      ) : (
-        <DatasetsTable projectId={projectId} />
-      )}
+      <DatasetsTable projectId={projectId} />
     </Page>
   );
 }

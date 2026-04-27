@@ -1,4 +1,3 @@
-import { ObservationLevelType } from "@langfuse/shared";
 import Decimal from "decimal.js";
 
 export type BatchExportSessionsRow = {
@@ -25,10 +24,7 @@ export type BatchExportTracesRow = {
   timestamp: Date;
   name: string;
   userId?: string | null;
-  level?: ObservationLevelType | null;
-  observationCount?: number | null;
   scores?: Record<string, string[] | number[]> | null;
-  latency?: number | null;
   release?: string | null;
   version?: string | null;
   sessionId?: string | null;
@@ -36,12 +32,40 @@ export type BatchExportTracesRow = {
   output?: unknown | null;
   metadata?: unknown | null;
   tags: string[];
-  usage: {
-    promptTokens?: bigint | null;
-    completionTokens?: bigint | null;
-    totalTokens?: bigint | null;
-  };
-  inputCost?: Decimal | null;
-  outputCost?: Decimal | null;
-  totalCost?: Decimal | null;
+};
+
+export type BatchExportEventsRow = {
+  id: string;
+  traceId: string;
+  traceName: string | null;
+  type: string;
+  name: string;
+  startTime: Date;
+  endTime: Date | null;
+  completionStartTime: Date | null;
+  environment: string | null;
+  version: string | null;
+  userId: string | null;
+  sessionId: string | null;
+  level: string;
+  statusMessage: string | null;
+  promptName: string | null;
+  promptId: string | null;
+  promptVersion: number | null;
+  modelId: string | null;
+  providedModelName: string | null;
+  modelParameters: unknown;
+  usageDetails: Record<string, number>;
+  costDetails: Record<string, number>;
+  totalCost: number | null;
+  input: unknown;
+  output: unknown;
+  metadata: Record<string, unknown>;
+  latencyMs: number | null;
+  timeToFirstTokenMs: number | null;
+  tags: string[];
+  release: string | null;
+  parentObservationId: string | null;
+  scores?: Record<string, string[] | number[]> | null;
+  comments: unknown[];
 };

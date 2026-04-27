@@ -1,10 +1,58 @@
 import z from "zod";
 
+export const EvalTargetObject = {
+  TRACE: "trace",
+  DATASET: "dataset",
+  EVENT: "event",
+  EXPERIMENT: "experiment",
+} as const;
+
+export type EvalTargetObject =
+  (typeof EvalTargetObject)[keyof typeof EvalTargetObject];
+
+export const EvalTargetObjectSchema = z.enum(Object.values(EvalTargetObject));
+
+// Batch action source tables that support evaluation
+export const BatchEvalSourceTable = {
+  EVENTS: "events",
+  EXPERIMENT_ITEMS: "experiment-items",
+  EXPERIMENTS: "experiments",
+} as const;
+
+export type BatchEvalSourceTable =
+  (typeof BatchEvalSourceTable)[keyof typeof BatchEvalSourceTable];
+
+export const BatchEvalSourceTableSchema = z.enum([
+  BatchEvalSourceTable.EVENTS,
+  BatchEvalSourceTable.EXPERIMENT_ITEMS,
+  BatchEvalSourceTable.EXPERIMENTS,
+]);
+
+/**
+ * Maps a batch evaluation source table to its corresponding eval target object.
+ * - "events" → EvalTargetObject.EVENT (observation-scoped evaluators)
+ * - "experiment-items" / "experiments" → EvalTargetObject.EXPERIMENT (experiment-scoped evaluators)
+ */
+export function getEvalTargetObjectFromSourceTable(
+  sourceTable: BatchEvalSourceTable,
+): EvalTargetObject {
+  return sourceTable === BatchEvalSourceTable.EVENTS
+    ? EvalTargetObject.EVENT
+    : EvalTargetObject.EXPERIMENT;
+}
+
 export const langfuseObjects = [
   "trace",
   "span",
   "generation",
   "event",
+  "agent",
+  "tool",
+  "chain",
+  "retriever",
+  "evaluator",
+  "embedding",
+  "guardrail",
   "dataset_item",
 ] as const;
 
@@ -16,25 +64,32 @@ export const variableMapping = z
   .object({
     templateVariable: z.string(), // variable name in the template
     // name of the observation to extract the variable from
-    // not required for trace, as we only have one.
+    // not required for trace or dataset_item, as we only have one of each.
     objectName: z.string().nullish(),
     langfuseObject: langfuseObject,
     selectedColumnId: z.string(),
     jsonSelector: z.string().nullish(),
   })
   .refine(
-    (value) => value.langfuseObject === "trace" || value.objectName !== null,
+    (value) =>
+      value.langfuseObject === "trace" ||
+      value.langfuseObject === "dataset_item" ||
+      value.objectName !== null,
     {
-      message: "objectName is required for langfuseObjects other than trace",
+      message:
+        "objectName is required for observation objects (generation, span, score)",
     },
   );
 
 export const variableMappingList = z.array(variableMapping);
 
+// WIP version for forms - langfuseObject optional to support both:
+// - Trace/Dataset evals: Include langfuseObject and objectName to specify which observation
+// - Event/Experiment evals: Omit them since the observation is already selected
 export const wipVariableMapping = z.object({
   templateVariable: z.string(),
   objectName: z.string().nullish(),
-  langfuseObject: langfuseObject,
+  langfuseObject: langfuseObject.optional(),
   selectedColumnId: z.string().nullish(),
   jsonSelector: z.string().nullish(),
 });
@@ -52,6 +107,56 @@ const observationCols = [
 
 export const availableTraceEvalVariables = [
   {
+    id: "agent",
+    display: "Agent",
+    availableColumns: observationCols,
+  },
+  {
+    id: "chain",
+    display: "Chain",
+    availableColumns: observationCols,
+  },
+  {
+    id: "embedding",
+    display: "Embedding",
+    availableColumns: observationCols,
+  },
+  {
+    id: "evaluator",
+    display: "Evaluator",
+    availableColumns: observationCols,
+  },
+  {
+    id: "event",
+    display: "Event",
+    availableColumns: observationCols,
+  },
+  {
+    id: "generation",
+    display: "Generation",
+    availableColumns: observationCols,
+  },
+  {
+    id: "guardrail",
+    display: "Guardrail",
+    availableColumns: observationCols,
+  },
+  {
+    id: "retriever",
+    display: "Retriever",
+    availableColumns: observationCols,
+  },
+  {
+    id: "span",
+    display: "Span",
+    availableColumns: observationCols,
+  },
+  {
+    id: "tool",
+    display: "Tool",
+    availableColumns: observationCols,
+  },
+  {
     id: "trace",
     display: "Trace",
     availableColumns: [
@@ -64,21 +169,6 @@ export const availableTraceEvalVariables = [
       { name: "Input", id: "input", internal: 't."input"' },
       { name: "Output", id: "output", internal: 't."output"' },
     ],
-  },
-  {
-    id: "span",
-    display: "Span",
-    availableColumns: observationCols,
-  },
-  {
-    id: "generation",
-    display: "Generation",
-    availableColumns: observationCols,
-  },
-  {
-    id: "event",
-    display: "Event",
-    availableColumns: observationCols,
   },
 ];
 
@@ -104,14 +194,25 @@ export const availableDatasetEvalVariables = [
   ...availableTraceEvalVariables,
 ];
 
-export const OutputSchema = z.object({
-  reasoning: z.string(),
-  score: z.string(),
-});
-
 export const DEFAULT_TRACE_JOB_DELAY = 10_000;
 
 export const JobTimeScopeZod = z.enum(["NEW", "EXISTING"]);
 export type JobTimeScope = z.infer<typeof JobTimeScopeZod>;
 
 export const TimeScopeSchema = z.array(JobTimeScopeZod).default(["NEW"]);
+
+// Simplified variable mapping for observation-based evals.
+// Unlike trace-based evals, we don't need objectName since we're directly
+// targeting a specific observation - no need to specify which observation to extract from.
+export const observationVariableMapping = z.object({
+  templateVariable: z.string(), // variable name in the template
+  selectedColumnId: z.string(), // column to extract (must match observationEvalVariableColumns.id)
+  jsonSelector: z.string().nullish(), // optional JSON path selector
+});
+
+export const observationVariableMappingList = z.array(
+  observationVariableMapping,
+);
+export type ObservationVariableMapping = z.infer<
+  typeof observationVariableMapping
+>;

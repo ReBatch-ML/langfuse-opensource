@@ -7,3 +7,6 @@ export { MethodNotAllowedError } from "./MethodNotAllowedError";
 export { ApiError } from "./ApiError";
 export { InternalServerError } from "./InternalServerError";
 export { LangfuseConflictError } from "./ConflictError";
+export { ServiceUnavailableError } from "./ServiceUnavailableError";
+export { NotImplementedError } from "./NotImplementedError";
+export * from "./errorMessages";

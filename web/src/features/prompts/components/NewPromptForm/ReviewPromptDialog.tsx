@@ -22,6 +22,24 @@ type ReviewPromptDialogProps = {
   getNewPromptValues: () => NewPromptFormSchemaType;
 };
 
+const formatMessages = (messages: any[], excludeKeys: string[] = []) => {
+  return JSON.stringify(
+    messages.map((m) =>
+      Object.fromEntries(
+        Object.entries(m)
+          .filter(
+            ([k]) =>
+              !excludeKeys.includes(k) &&
+              (k !== "type" || m.type === "placeholder"),
+          )
+          .sort(([a], [b]) => a.localeCompare(b)),
+      ),
+    ),
+    null,
+    2,
+  );
+};
+
 export const ReviewPromptDialog: React.FC<ReviewPromptDialogProps> = (
   props,
 ) => {
@@ -37,23 +55,15 @@ export const ReviewPromptDialog: React.FC<ReviewPromptDialogProps> = (
     }
   }, [open, setNewPromptValues, getNewPromptValues]);
 
-  const initialPromptContent: string =
+  const initialPromptContent =
     initialPrompt.type === "text"
       ? (initialPrompt.prompt as string)
-      : JSON.stringify(initialPrompt.prompt, null, 2);
+      : formatMessages(initialPrompt.prompt as any[]);
 
-  const newPromptContent: string =
+  const newPromptContent =
     initialPrompt.type === "text"
       ? (newPromptValue?.textPrompt ?? "")
-      : JSON.stringify(
-          newPromptValue?.chatPrompt.map((m) =>
-            Object.fromEntries(
-              Object.entries(m).filter(([k, _]) => k !== "id" && k !== "type"),
-            ),
-          ) ?? "{}",
-          null,
-          2,
-        );
+      : formatMessages(newPromptValue?.chatPrompt ?? [], ["id"]);
 
   const newConfig = JSON.stringify(
     JSON.parse(newPromptValue?.config ?? "{}"),
@@ -73,7 +83,7 @@ export const ReviewPromptDialog: React.FC<ReviewPromptDialogProps> = (
         </DialogHeader>
 
         <DialogBody>
-          <div className="max-h-[80vh] max-w-screen-xl space-y-6 overflow-y-auto">
+          <div className="max-h-[80vh] max-w-(--breakpoint-xl) space-y-6 overflow-y-auto">
             <div className="space-y-6">
               <div className="space-y-4">
                 <div>
@@ -104,7 +114,7 @@ export const ReviewPromptDialog: React.FC<ReviewPromptDialogProps> = (
             type="button"
             variant="secondary"
             onClick={() => setOpen(false)}
-            className="min-w-[8rem]"
+            className="min-w-32"
           >
             Cancel
           </Button>
@@ -112,7 +122,7 @@ export const ReviewPromptDialog: React.FC<ReviewPromptDialogProps> = (
             onClick={onConfirm}
             loading={isLoading}
             variant={newPromptValue?.isActive ? "destructive" : "default"}
-            className="min-w-[8rem]"
+            className="min-w-32"
           >
             Save new version
             {newPromptValue?.isActive ? " and promote to production" : ""}

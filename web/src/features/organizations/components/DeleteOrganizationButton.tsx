@@ -48,7 +48,7 @@ export function DeleteOrganizationButton() {
   const deleteOrganization = api.organizations.delete.useMutation();
   const hasProjects = !!organization && organization.projects.length > 0;
 
-  const form = useForm<z.infer<typeof formSchema>>({
+  const form = useForm({
     resolver: zodResolver(formSchema),
     defaultValues: {
       name: "",
@@ -92,11 +92,7 @@ export function DeleteOrganizationButton() {
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
-          <form
-            // eslint-disable-next-line @typescript-eslint/no-misused-promises
-            onSubmit={form.handleSubmit(onSubmit)}
-            className="space-y-8"
-          >
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
             {!hasProjects && (
               <DialogBody>
                 <FormField
@@ -117,7 +113,7 @@ export function DeleteOrganizationButton() {
               <Button
                 type="submit"
                 variant="destructive"
-                loading={deleteOrganization.isLoading}
+                loading={deleteOrganization.isPending}
                 disabled={hasProjects}
                 className="w-full"
               >

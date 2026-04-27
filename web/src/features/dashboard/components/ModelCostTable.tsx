@@ -3,16 +3,17 @@ import { RightAlignedCell } from "@/src/features/dashboard/components/RightAlign
 import { LeftAlignedCell } from "@/src/features/dashboard/components/LeftAlignedCell";
 import { DashboardCard } from "@/src/features/dashboard/components/cards/DashboardCard";
 import { DashboardTable } from "@/src/features/dashboard/components/cards/DashboardTable";
-import { type FilterState } from "@langfuse/shared";
-import { api } from "@/src/utils/api";
+import { type FilterState, getGenerationLikeTypes } from "@langfuse/shared";
 import { compactNumberFormatter } from "@/src/utils/numbers";
 import { TotalMetric } from "./TotalMetric";
 import { totalCostDashboardFormatted } from "@/src/features/dashboard/lib/dashboard-utils";
 import { truncate } from "@/src/utils/string";
 import {
   type QueryType,
+  type ViewVersion,
   mapLegacyUiTableFilterToView,
 } from "@/src/features/query";
+import { useScheduledDashboardExecuteQuery } from "@/src/hooks/useDashboardQueryScheduler";
 
 export const ModelCostTable = ({
   className,
@@ -21,6 +22,8 @@ export const ModelCostTable = ({
   fromTimestamp,
   toTimestamp,
   isLoading = false,
+  metricsVersion,
+  schedulerId,
 }: {
   className: string;
   projectId: string;
@@ -28,6 +31,8 @@ export const ModelCostTable = ({
   fromTimestamp: Date;
   toTimestamp: Date;
   isLoading?: boolean;
+  metricsVersion?: ViewVersion;
+  schedulerId?: string;
 }) => {
   const modelCostQuery: QueryType = {
     view: "observations",
@@ -40,21 +45,23 @@ export const ModelCostTable = ({
       ...mapLegacyUiTableFilterToView("observations", globalFilterState),
       {
         column: "type",
-        operator: "=",
-        value: "GENERATION",
-        type: "string",
+        operator: "any of",
+        value: getGenerationLikeTypes(),
+        type: "stringOptions",
       },
     ],
     timeDimension: null,
     fromTimestamp: fromTimestamp.toISOString(),
     toTimestamp: toTimestamp.toISOString(),
-    orderBy: null,
+    orderBy: [{ field: "sum_totalCost", direction: "desc" }],
+    chartConfig: { type: "table", row_limit: 20 },
   };
 
-  const metrics = api.dashboard.executeQuery.useQuery(
+  const metrics = useScheduledDashboardExecuteQuery(
     {
       projectId,
       query: modelCostQuery,
+      version: metricsVersion,
     },
     {
       trpc: {
@@ -62,6 +69,7 @@ export const ModelCostTable = ({
           skipBatch: true,
         },
       },
+      queryId: `${schedulerId ?? "home:model-costs"}:metrics`,
       enabled: !isLoading,
     },
   );

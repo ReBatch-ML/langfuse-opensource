@@ -1,3 +1,4 @@
+import type React from "react";
 import { Badge } from "@/src/components/ui/badge";
 import {
   CircleDot,
@@ -14,9 +15,14 @@ import {
   TestTubeDiagonal,
   Clock,
   Bot,
+  Wrench,
+  Link,
+  Search,
+  Layers3,
+  ShieldCheck,
 } from "lucide-react";
 import { cva } from "class-variance-authority";
-import { ObservationType } from "@langfuse/shared";
+import { type ObservationType } from "@langfuse/shared";
 import { cn } from "@/src/utils/tailwind";
 
 export type LangfuseItemType =
@@ -31,13 +37,20 @@ export type LangfuseItemType =
   | "ANNOTATION_QUEUE"
   | "PROMPT"
   | "EVALUATOR"
-  | "RUNNING_EVALUATOR";
+  | "RUNNING_EVALUATOR"
+  | "EXPERIMENT";
 
-const iconMap: Record<LangfuseItemType, React.ElementType> = {
+const iconMap = {
   TRACE: ListTree,
-  [ObservationType.GENERATION]: Fan,
-  [ObservationType.EVENT]: CircleDot,
-  [ObservationType.SPAN]: MoveHorizontal,
+  GENERATION: Fan,
+  EVENT: CircleDot,
+  SPAN: MoveHorizontal,
+  AGENT: Bot,
+  TOOL: Wrench,
+  CHAIN: Link,
+  RETRIEVER: Search,
+  EMBEDDING: Layers3,
+  GUARDRAIL: ShieldCheck,
   SESSION: Clock,
   USER: User,
   QUEUE_ITEM: ClipboardPen,
@@ -48,15 +61,22 @@ const iconMap: Record<LangfuseItemType, React.ElementType> = {
   PROMPT: FileText,
   RUNNING_EVALUATOR: Bot,
   EVALUATOR: WandSparkles,
+  EXPERIMENT: FlaskConical,
 } as const;
 
 const iconVariants = cva(cn("h-4 w-4"), {
   variants: {
     type: {
       TRACE: "text-dark-green",
-      [ObservationType.GENERATION]: "text-muted-magenta",
-      [ObservationType.EVENT]: "text-muted-green",
-      [ObservationType.SPAN]: "text-muted-blue",
+      GENERATION: "text-muted-magenta",
+      EVENT: "text-muted-green",
+      SPAN: "text-muted-blue",
+      AGENT: "text-purple-600",
+      TOOL: "text-orange-600",
+      CHAIN: "text-pink-600",
+      RETRIEVER: "text-teal-600",
+      EMBEDDING: "text-amber-600",
+      GUARDRAIL: "text-red-600",
       SESSION: "text-primary-accent",
       USER: "text-primary-accent",
       QUEUE_ITEM: "text-primary-accent",
@@ -65,11 +85,21 @@ const iconVariants = cva(cn("h-4 w-4"), {
       DATASET_ITEM: "text-primary-accent",
       ANNOTATION_QUEUE: "text-primary-accent",
       PROMPT: "text-primary-accent",
-      EVALUATOR: "text-primary-accent",
+      EVALUATOR: "text-primary-accent", // usually text-indigo-600
       RUNNING_EVALUATOR: "text-primary-accent",
+      EXPERIMENT: "text-primary-accent",
     },
   },
 });
+
+export function renderFilterIcon(value: string): React.ReactNode {
+  const type = value as LangfuseItemType;
+  const Icon = iconMap[type];
+  if (!Icon) return null;
+  return (
+    <Icon className={cn("h-3.5 w-3.5 shrink-0", iconVariants({ type }))} />
+  );
+}
 
 export function ItemBadge({
   type,
@@ -91,19 +121,24 @@ export function ItemBadge({
     className,
   );
 
-  const label = type.charAt(0).toUpperCase() + type.slice(1).toLowerCase();
+  const label =
+    String(type).charAt(0).toUpperCase() + String(type).slice(1).toLowerCase();
 
   return (
     <Badge
       variant="outline"
       title={label}
       className={cn(
-        "flex max-w-fit items-center gap-1 border-2 bg-background px-1",
+        "bg-background flex max-w-fit items-center gap-1 overflow-hidden border-2 px-1 whitespace-nowrap",
         isSmall && "h-4",
       )}
     >
       <Icon className={iconClass} />
-      {showLabel && <span>{label.replace(/_/g, " ")}</span>}
+      {showLabel && (
+        <span className="truncate" title={label.replace(/_/g, " ")}>
+          {label.replace(/_/g, " ")}
+        </span>
+      )}
     </Badge>
   );
 }

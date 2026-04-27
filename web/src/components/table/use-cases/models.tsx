@@ -2,9 +2,11 @@ import { DataTable } from "@/src/components/table/data-table";
 import { type LangfuseColumnDef } from "@/src/components/table/types";
 import useColumnVisibility from "@/src/features/column-visibility/hooks/useColumnVisibility";
 import { api } from "@/src/utils/api";
+import { safeExtract } from "@/src/utils/map-utils";
 import { type Prisma } from "@langfuse/shared/src/db";
-import { useQueryParams, withDefault, NumberParam } from "use-query-params";
-import { IOTableCell } from "@/src/components/ui/CodeJsonViewer";
+import { useQueryParams, withDefault, StringParam } from "use-query-params";
+import { usePaginationState } from "@/src/hooks/usePaginationState";
+import { IOTableCell } from "../../ui/IOTableCell";
 import { useRowHeightLocalStorage } from "@/src/components/table/data-table-row-height-switch";
 import { DataTableToolbar } from "@/src/components/table/data-table-toolbar";
 import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
@@ -19,11 +21,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/src/components/ui/tooltip";
+import { Skeleton } from "@/src/components/ui/skeleton";
 import { LangfuseIcon } from "@/src/components/LangfuseLogo";
 import { useRouter } from "next/router";
 import { PriceUnitSelector } from "@/src/features/models/components/PriceUnitSelector";
 import { usePriceUnitMultiplier } from "@/src/features/models/hooks/usePriceUnitMultiplier";
-import { UpsertModelFormDrawer } from "@/src/features/models/components/UpsertModelFormDrawer";
+import { UpsertModelFormDialog } from "@/src/features/models/components/UpsertModelFormDialog";
+import { TestModelMatchButton } from "@/src/features/models/components/test-match/TestModelMatchButton";
 import { ActionButton } from "@/src/components/ActionButton";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
@@ -37,7 +41,6 @@ export type ModelTableRow = {
   prices?: Record<string, number>;
   tokenizerId?: string;
   config?: Prisma.JsonValue;
-  lastUsed?: Date | null;
   serverResponse: GetModelResult;
 };
 
@@ -61,15 +64,20 @@ const modelConfigDescriptions = {
 export default function ModelTable({ projectId }: { projectId: string }) {
   const router = useRouter();
   const capture = usePostHogClientCapture();
-  const [paginationState, setPaginationState] = useQueryParams({
-    pageIndex: withDefault(NumberParam, 0),
-    pageSize: withDefault(NumberParam, 50),
+  const [paginationState, setPaginationState] = usePaginationState(0, 50, {
+    page: "pageIndex",
+    limit: "pageSize",
   });
+  const [queryParams, setQueryParams] = useQueryParams({
+    search: withDefault(StringParam, ""),
+  });
+  const searchString = queryParams.search;
   const models = api.models.getAll.useQuery(
     {
       page: paginationState.pageIndex,
       limit: paginationState.pageSize,
       projectId,
+      searchString,
     },
     {
       refetchOnWindowFocus: false,
@@ -79,6 +87,18 @@ export default function ModelTable({ projectId }: { projectId: string }) {
     },
   );
   const totalCount = models.data?.totalCount ?? null;
+
+  const modelIds = models.data?.models.map((m) => m.id) ?? [];
+  const lastUsed = api.models.lastUsedByModelIds.useQuery(
+    { projectId, modelIds },
+    {
+      enabled: models.isSuccess && modelIds.length > 0,
+      refetchOnWindowFocus: false,
+      refetchOnMount: true,
+      refetchOnReconnect: false,
+      staleTime: 1000 * 60 * 10,
+    },
+  );
   const { priceUnit } = usePriceUnitMultiplier();
   const [rowHeight, setRowHeight] = useRowHeightLocalStorage("models", "m");
 
@@ -212,7 +232,8 @@ export default function ModelTable({ projectId }: { projectId: string }) {
       enableHiding: true,
       size: 120,
       cell: ({ row }) => {
-        const value: Date | null | undefined = row.getValue("lastUsed");
+        if (!lastUsed.data) return <Skeleton className="h-4 w-20" />;
+        const value = lastUsed.data[row.original.modelId];
         return value?.toLocaleString() ?? "";
       },
     },
@@ -256,15 +277,18 @@ export default function ModelTable({ projectId }: { projectId: string }) {
   );
 
   const convertToTableRow = (model: GetModelResult): ModelTableRow => {
+    // Get default tier prices for backward compatibility
+    const defaultTier = model.pricingTiers.find((t) => t.isDefault);
+    const prices = defaultTier?.prices;
+
     return {
       modelId: model.id,
       maintainer: model.projectId ? "User" : "Langfuse",
       modelName: model.modelName,
       matchPattern: model.matchPattern,
-      prices: model.prices,
+      prices,
       tokenizerId: model.tokenizerId ?? undefined,
       config: model.tokenizerConfig,
-      lastUsed: model.lastUsed,
       serverResponse: model,
     };
   };
@@ -279,25 +303,36 @@ export default function ModelTable({ projectId }: { projectId: string }) {
         setColumnOrder={setColumnOrder}
         rowHeight={rowHeight}
         setRowHeight={setRowHeight}
+        searchConfig={{
+          updateQuery: (event: string) => {
+            setQueryParams({ search: event });
+          },
+          tableAllowsFullTextSearch: true,
+          currentQuery: searchString,
+        }}
         actionButtons={
-          <UpsertModelFormDrawer {...{ projectId, action: "create" }}>
-            <ActionButton
-              variant="secondary"
-              icon={<PlusIcon className="h-4 w-4" />}
-              hasAccess={hasWriteAccess}
-              onClick={() => capture("models:new_form_open")}
-            >
-              Add model definition
-            </ActionButton>
-          </UpsertModelFormDrawer>
+          <>
+            <TestModelMatchButton projectId={projectId} />
+            <UpsertModelFormDialog {...{ projectId, action: "create" }}>
+              <ActionButton
+                variant="secondary"
+                icon={<PlusIcon className="h-4 w-4" />}
+                hasAccess={hasWriteAccess}
+                onClick={() => capture("models:new_form_open")}
+              >
+                Add Model Definition
+              </ActionButton>
+            </UpsertModelFormDialog>
+          </>
         }
         className="px-0"
       />
-      <SettingsTableCard>
+      <SettingsTableCard className="max-h-[75dvh]">
         <DataTable
+          tableName={"models"}
           columns={columns}
           data={
-            models.isLoading
+            models.isPending
               ? { isLoading: true, isError: false }
               : models.isError
                 ? {
@@ -308,7 +343,9 @@ export default function ModelTable({ projectId }: { projectId: string }) {
                 : {
                     isLoading: false,
                     isError: false,
-                    data: models.data.models.map((t) => convertToTableRow(t)),
+                    data: safeExtract(models.data, "models", []).map((t) =>
+                      convertToTableRow(t),
+                    ),
                   }
           }
           pagination={{
@@ -321,6 +358,7 @@ export default function ModelTable({ projectId }: { projectId: string }) {
           columnOrder={columnOrder}
           onColumnOrderChange={setColumnOrder}
           rowHeight={rowHeight}
+          cellPadding="comfortable"
           onRowClick={(row) => {
             router.push(`/project/${projectId}/settings/models/${row.modelId}`);
           }}

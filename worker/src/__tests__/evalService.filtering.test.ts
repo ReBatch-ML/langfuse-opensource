@@ -1,9 +1,9 @@
-import { ObservationLevel, singleFilter } from "@langfuse/shared";
 import {
-  JobConfiguration,
-  kyselyPrisma,
-  prisma,
-} from "@langfuse/shared/src/db";
+  ObservationLevel,
+  singleFilter,
+  EvalTargetObject,
+} from "@langfuse/shared";
+import { JobConfiguration, prisma } from "@langfuse/shared/src/db";
 import {
   convertDateToClickhouseDateTime,
   createOrgProjectAndApiKey,
@@ -17,10 +17,13 @@ import { afterAll, test as baseTest, beforeAll, describe } from "vitest";
 import { z } from "zod";
 import { createEvalJobs } from "../features/evaluation/evalService";
 import { OpenAIServer } from "./network";
-import { pruneDatabase } from "./utils";
 
 let OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const hasActiveKey = Boolean(OPENAI_API_KEY);
+// Check for both OPENAI_API_KEY and LANGFUSE_LLM_CONNECTION_OPENAI_KEY
+// to avoid interfering with llmConnections tests that use the latter
+const hasActiveKey = Boolean(
+  OPENAI_API_KEY || process.env.LANGFUSE_LLM_CONNECTION_OPENAI_KEY,
+);
 if (!hasActiveKey) {
   OPENAI_API_KEY = "sk-test_not_used_as_network_mocks_are_activated";
 }
@@ -31,7 +34,6 @@ const openAIServer = new OpenAIServer({
 
 beforeAll(openAIServer.setup);
 beforeAll(async () => {
-  await pruneDatabase();
   openAIServer.respondWithDefault();
 });
 afterAll(openAIServer.teardown);
@@ -47,11 +49,9 @@ type TraceRecordOmitProjectIdAndId = Partial<
 >;
 
 const __getJobs = (projectId: string) =>
-  kyselyPrisma.$kysely
-    .selectFrom("job_executions")
-    .selectAll()
-    .where("project_id", "=", projectId)
-    .execute();
+  prisma.jobExecution.findMany({
+    where: { projectId },
+  });
 
 type JobExecutions = Awaited<ReturnType<typeof __getJobs>>;
 
@@ -121,7 +121,7 @@ const test = baseTest.extend<{
         provider: "openai",
         modelParams: { temperature: 0 },
         vars: [],
-        outputSchema: {
+        outputDefinition: {
           type: "object",
           properties: { score: { type: "number" } },
         },
@@ -136,7 +136,7 @@ const test = baseTest.extend<{
           jobType: "EVAL",
           delay: 0,
           sampling: new Decimal("1"),
-          targetObject: "trace",
+          targetObject: EvalTargetObject.TRACE,
           scoreName: "score",
           variableMapping: JSON.parse("[]"),
           ...job,
@@ -208,7 +208,7 @@ describe.concurrent("test eval filtering", () => {
     const jobs = await getJobs();
 
     expect(jobs.length).toBe(1);
-    expect(jobs[0].job_input_trace_id).toBe(traceId1); // Only the production environment trace should have a job
+    expect(jobs[0].jobInputTraceId).toBe(traceId1); // Only the production environment trace should have a job
     expect(jobs[0].status.toString()).toBe("PENDING");
   }, 10_000);
 
@@ -245,7 +245,7 @@ describe.concurrent("test eval filtering", () => {
     const jobs = await getJobs();
 
     expect(jobs.length).toBe(1);
-    expect(jobs[0].job_input_trace_id).toBe(traceId1); // Only the important-trace should have a job
+    expect(jobs[0].jobInputTraceId).toBe(traceId1); // Only the important-trace should have a job
     expect(jobs[0].status.toString()).toBe("PENDING");
   }, 10_000);
 
@@ -275,7 +275,7 @@ describe.concurrent("test eval filtering", () => {
     const jobs = await getJobs();
 
     expect(jobs.length).toBe(1);
-    expect(jobs[0].job_input_trace_id).toBe(traceId1);
+    expect(jobs[0].jobInputTraceId).toBe(traceId1);
     expect(jobs[0].status.toString()).toBe("PENDING");
   }, 10_000);
 
@@ -337,7 +337,7 @@ describe.concurrent("test eval filtering", () => {
     const jobs = await getJobs();
 
     expect(jobs.length).toBe(1);
-    expect(jobs[0].job_input_trace_id).toBe(traceId1);
+    expect(jobs[0].jobInputTraceId).toBe(traceId1);
     expect(jobs[0].status.toString()).toBe("PENDING");
   }, 10_000);
 
@@ -374,7 +374,7 @@ describe.concurrent("test eval filtering", () => {
     const jobs = await getJobs();
 
     expect(jobs.length).toBe(1);
-    expect(jobs[0].job_input_trace_id).toBe(traceId1);
+    expect(jobs[0].jobInputTraceId).toBe(traceId1);
     expect(jobs[0].status.toString()).toBe("PENDING");
   }, 10_000);
 
@@ -411,7 +411,7 @@ describe.concurrent("test eval filtering", () => {
     const jobs = await getJobs();
 
     expect(jobs.length).toBe(1);
-    expect(jobs[0].job_input_trace_id).toBe(traceId1);
+    expect(jobs[0].jobInputTraceId).toBe(traceId1);
     expect(jobs[0].status.toString()).toBe("PENDING");
   }, 10_000);
 
@@ -449,7 +449,7 @@ describe.concurrent("test eval filtering", () => {
     const jobs = await getJobs();
 
     expect(jobs.length).toBe(1);
-    expect(jobs[0].job_input_trace_id).toBe(traceId1);
+    expect(jobs[0].jobInputTraceId).toBe(traceId1);
     expect(jobs[0].status.toString()).toBe("PENDING");
   }, 10_000);
 
@@ -486,7 +486,7 @@ describe.concurrent("test eval filtering", () => {
     const jobs = await getJobs();
 
     expect(jobs.length).toBe(1);
-    expect(jobs[0].job_input_trace_id).toBe(traceId1);
+    expect(jobs[0].jobInputTraceId).toBe(traceId1);
     expect(jobs[0].status.toString()).toBe("PENDING");
   }, 10_000);
 
@@ -523,7 +523,7 @@ describe.concurrent("test eval filtering", () => {
     const jobs = await getJobs();
 
     expect(jobs.length).toBe(1);
-    expect(jobs[0].job_input_trace_id).toBe(traceId1);
+    expect(jobs[0].jobInputTraceId).toBe(traceId1);
     expect(jobs[0].status.toString()).toBe("PENDING");
   }, 10_000);
 
@@ -580,7 +580,7 @@ describe.concurrent("test eval filtering", () => {
     const jobs = await getJobs();
 
     expect(jobs.length).toBe(1);
-    expect(jobs[0].job_input_trace_id).toBe(traceId1);
+    expect(jobs[0].jobInputTraceId).toBe(traceId1);
     expect(jobs[0].status.toString()).toBe("PENDING");
   }, 10_000);
 
@@ -617,7 +617,7 @@ describe.concurrent("test eval filtering", () => {
     const jobs = await getJobs();
 
     expect(jobs.length).toBe(1);
-    expect(jobs[0].job_input_trace_id).toBe(traceId1);
+    expect(jobs[0].jobInputTraceId).toBe(traceId1);
     expect(jobs[0].status.toString()).toBe("PENDING");
   }, 10_000);
 
@@ -654,7 +654,51 @@ describe.concurrent("test eval filtering", () => {
     const jobs = await getJobs();
 
     expect(jobs.length).toBe(1);
-    expect(jobs[0].job_input_trace_id).toBe(traceId1);
+    expect(jobs[0].jobInputTraceId).toBe(traceId1);
     expect(jobs[0].status.toString()).toBe("PENDING");
+  }, 10_000);
+
+  test("cached trace preserves metadata for in-memory filter evaluation", async ({
+    expect,
+    projectId,
+    traceId1,
+    upsertTrace,
+    configureJob,
+    getJobs,
+  }) => {
+    // Create a trace with metadata
+    await upsertTrace({
+      id: traceId1,
+      metadata: { tier: "premium" },
+    });
+
+    // Create TWO job configs so configs.length > 1, triggering the cached trace path
+    // (getTraceById is called with excludeInputOutput: true)
+    await configureJob({
+      scoreName: "score-with-metadata-filter",
+      filter: [
+        {
+          type: "stringObject",
+          key: "tier",
+          value: "premium",
+          column: "metadata",
+          operator: "=",
+        },
+      ],
+    });
+    await configureJob({
+      scoreName: "score-no-filter",
+      filter: [],
+    });
+
+    // Single createEvalJobs call => configs.length=2 => cached trace path
+    await createEvalJobs({
+      event: { projectId, traceId: traceId1 },
+      jobTimestamp: new Date(),
+    });
+
+    const jobs = await getJobs();
+    // Both configs should produce a job — the metadata filter should match
+    expect(jobs.length).toBe(2);
   }, 10_000);
 });

@@ -15,6 +15,7 @@ import {
   MethodNotAllowedError,
   BaseError,
   UnauthorizedError,
+  ForbiddenError,
 } from "@langfuse/shared";
 import { processEventBatch } from "@langfuse/shared/src/server";
 import { prisma } from "@langfuse/shared/src/db";
@@ -86,6 +87,12 @@ export default async function handler(
       );
     }
 
+    if (authCheck.scope.isIngestionSuspended) {
+      throw new ForbiddenError(
+        "Ingestion suspended: Usage threshold exceeded. Please upgrade your plan.",
+      );
+    }
+
     const ctx = contextWithLangfuseProps({
       headers: req.headers,
       projectId: authCheck.scope.projectId,
@@ -150,10 +157,10 @@ export default async function handler(
     }
 
     if (error instanceof z.ZodError) {
-      logger.error(`Zod exception`, error.errors);
+      logger.error(`Zod exception`, error.issues);
       return res.status(400).json({
         message: "Invalid request data",
-        error: error.errors,
+        error: error.issues,
       });
     }
 

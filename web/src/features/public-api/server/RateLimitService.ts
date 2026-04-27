@@ -1,4 +1,4 @@
-import type Redis from "ioredis";
+import { type Redis, type Cluster } from "ioredis";
 import { type z } from "zod";
 import { RateLimiterRedis, RateLimiterRes } from "rate-limiter-flexible";
 import { env } from "@/src/env.mjs";
@@ -15,7 +15,14 @@ import {
   createNewRedisInstance,
   redisQueueRetryOptions,
 } from "@langfuse/shared/src/server";
+import { env as sharedEnv } from "@langfuse/shared/src/env";
 import { type NextApiResponse } from "next";
+import {
+  createUnstablePublicApiRateLimitError,
+  sendUnstablePublicApiErrorResponse,
+  unstablePublicEvalsErrorContract,
+  type PublicApiErrorContract,
+} from "@/src/features/public-api/server/unstable-public-api-error-contract";
 
 // Business Logic
 // - rate limit strategy is based on org-id, org plan, and resources. Rate limits are applied in buckets of minutes.
@@ -24,7 +31,7 @@ import { type NextApiResponse } from "next";
 // - isRateLimited returns false for self-hosters
 // - sendRestResponseIfLimited sends a 429 response with headers if the rate limit is exceeded. Return this from the route handler.
 export class RateLimitService {
-  private static redis: Redis | null;
+  private static redis: Redis | Cluster | null;
   private static instance: RateLimitService | null = null;
 
   public static getInstance(redis: Redis | null = null) {
@@ -32,6 +39,7 @@ export class RateLimitService {
       RateLimitService.redis =
         redis ??
         createNewRedisInstance({
+          keyPrefix: sharedEnv.REDIS_KEY_PREFIX ?? undefined, // For multi-tenant Redis isolation
           enableAutoPipelining: false, // This may help avoid https://github.com/redis/ioredis/issues/1931
           enableOfflineQueue: false,
           lazyConnect: true, // Connect when first command is sent
@@ -46,6 +54,8 @@ export class RateLimitService {
     if (RateLimitService.redis && RateLimitService.redis.status !== "end") {
       RateLimitService.redis.disconnect();
     }
+    RateLimitService.redis = null;
+    RateLimitService.instance = null;
   }
 
   async rateLimitRequest(
@@ -88,7 +98,7 @@ export class RateLimitService {
     if (RateLimitService?.redis?.status !== "ready") {
       try {
         await RateLimitService?.redis?.connect();
-      } catch (err) {
+      } catch (_err) {
         // Do nothing here. We will fail open if Redis is not available.
       }
     }
@@ -162,25 +172,36 @@ export class RateLimitHelper {
     return this.res ? this.res.remainingPoints < 1 : false;
   }
 
-  sendRestResponseIfLimited(nextResponse: NextApiResponse) {
+  sendRestResponseIfLimited(
+    nextResponse: NextApiResponse,
+    errorContract?: PublicApiErrorContract,
+  ) {
     if (!this.res || !this.isRateLimited()) {
       logger.error("Trying to send rate limit response without being limited.");
       throw new Error(
         "Trying to send rate limit response without being limited.",
       );
     }
-    return sendRateLimitResponse(nextResponse, this.res);
+    return sendRateLimitResponse(nextResponse, this.res, errorContract);
   }
 }
 
 export const sendRateLimitResponse = (
   res: NextApiResponse,
   rateLimitRes: RateLimitResult,
+  errorContract?: PublicApiErrorContract,
 ) => {
   const httpHeader = createHttpHeaderFromRateLimit(rateLimitRes);
 
   for (const [header, value] of Object.entries(httpHeader)) {
     res.setHeader(header, value);
+  }
+
+  if (errorContract === unstablePublicEvalsErrorContract) {
+    return sendUnstablePublicApiErrorResponse(
+      res,
+      createUnstablePublicApiRateLimitError(rateLimitRes),
+    );
   }
 
   res.status(429).end("429 - rate limit exceeded");
@@ -264,16 +285,32 @@ const getPlanBasedRateLimitConfig = (
             points: 10,
             durationInSec: 86400, // 10 requests per day
           };
+        case "trace-delete":
+          return {
+            resource: "trace-delete",
+            points: 50,
+            durationInSec: 86400, // 50 requests per day
+          };
+        case "score-delete":
+          return {
+            resource: "score-delete",
+            points: 50,
+            durationInSec: 86400, // 50 requests per day
+          };
         default:
           const exhaustiveCheck: never = resource;
           throw new Error(`Unhandled resource case: ${exhaustiveCheck}`);
       }
     case "cloud:core":
+      // TEMPORARY: Expanded core plan rate limits to pro limits to enable legacy pro -> core migration
+      // Original core limits (commented out):
+      // ingestion: 4000, public-api: 100, datasets: 200, public-api-metrics: 200, public-api-daily-metrics-legacy: 20
       switch (resource) {
         case "ingestion":
           return {
             resource: "ingestion",
-            points: 4000,
+            // points: 4000, // original core limit
+            points: 20_000, // temporary: using pro limit
             durationInSec: 60,
           };
         case "legacy-ingestion":
@@ -291,26 +328,42 @@ const getPlanBasedRateLimitConfig = (
         case "public-api":
           return {
             resource: "public-api",
-            points: 100,
+            // points: 100, // original core limit
+            points: 1000, // temporary: using pro limit
             durationInSec: 60,
           };
         case "datasets":
           return {
             resource: "datasets",
-            points: 200,
+            // points: 200, // original core limit
+            points: 1000, // temporary: using pro limit
             durationInSec: 60,
           };
         case "public-api-metrics":
           return {
             resource: "public-api-metrics",
-            points: 200,
-            durationInSec: 86400, // 200 requests per day
+            // points: 200, // original core limit
+            points: 2000, // temporary: using pro limit
+            durationInSec: 86400, // 2000 requests per day
           };
         case "public-api-daily-metrics-legacy":
           return {
             resource: "public-api-daily-metrics-legacy",
-            points: 20,
-            durationInSec: 86400, // 20 requests per day
+            // points: 20, // original core limit
+            points: 200, // temporary: using pro limit
+            durationInSec: 86400, // 200 requests per day
+          };
+        case "trace-delete":
+          return {
+            resource: "trace-delete",
+            points: 200,
+            durationInSec: 86400, // 200 requests per day
+          };
+        case "score-delete":
+          return {
+            resource: "score-delete",
+            points: 200,
+            durationInSec: 86400, // 200 requests per day
           };
         default:
           const exhaustiveCheck: never = resource;
@@ -361,6 +414,18 @@ const getPlanBasedRateLimitConfig = (
             resource: "public-api-daily-metrics-legacy",
             points: 200,
             durationInSec: 86400, // 200 requests per day
+          };
+        case "trace-delete":
+          return {
+            resource: "trace-delete",
+            points: 1000,
+            durationInSec: 86400, // 1000 requests per day
+          };
+        case "score-delete":
+          return {
+            resource: "score-delete",
+            points: 1000,
+            durationInSec: 86400, // 1000 requests per day
           };
         default:
           const exhaustiveCheck: never = resource;

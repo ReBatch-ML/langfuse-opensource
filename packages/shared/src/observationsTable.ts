@@ -11,8 +11,10 @@ export const observationsTableCols: ColumnDefinition[] = [
   {
     name: "ID",
     id: "id",
-    type: "string",
+    // stringOptions type needed for comment filtering to inject "any of" filter with matching object IDs
+    type: "stringOptions",
     internal: 'o."id"',
+    options: [], // to be added at runtime
   },
   {
     name: "Name",
@@ -31,6 +33,13 @@ export const observationsTableCols: ColumnDefinition[] = [
   },
   { name: "Trace ID", id: "traceId", type: "string", internal: 't."id"' },
   {
+    name: "Parent Observation ID",
+    id: "parentObservationId",
+    type: "string",
+    internal: 'o."parent_observation_id"',
+    nullable: true,
+  },
+  {
     name: "Trace Name",
     id: "traceName",
     type: "stringOptions",
@@ -43,6 +52,14 @@ export const observationsTableCols: ColumnDefinition[] = [
     id: "userId",
     type: "string",
     internal: 't."user_id"',
+    nullable: true,
+  },
+  {
+    name: "Environment",
+    id: "environment",
+    type: "stringOptions",
+    internal: 'o."environment"',
+    options: [], // to be added at runtime
     nullable: true,
   },
   {
@@ -210,6 +227,48 @@ export const observationsTableCols: ColumnDefinition[] = [
     internal: "t.tags",
     options: [], // to be added at runtime
   },
+  {
+    name: "Comment Count",
+    id: "commentCount",
+    type: "number",
+    internal: "", // handled by comment filter helpers
+  },
+  {
+    name: "Comment Content",
+    id: "commentContent",
+    type: "string",
+    internal: "", // handled by comment filter helpers
+  },
+  {
+    name: "Available Tool Names",
+    id: "toolNames",
+    type: "arrayOptions",
+    internal: "", // ClickHouse only - uses mapKeys(tool_definitions)
+    options: [], // to be added at runtime
+    nullable: true,
+  },
+  {
+    name: "Called Tool Names",
+    id: "calledToolNames",
+    type: "arrayOptions",
+    internal: "", // ClickHouse only - uses tool_call_names
+    options: [], // to be added at runtime
+    nullable: true,
+  },
+  {
+    name: "Available Tools",
+    id: "toolDefinitions",
+    type: "number",
+    internal: "", // ClickHouse only
+    nullable: true,
+  },
+  {
+    name: "Tool Calls",
+    id: "toolCalls",
+    type: "number",
+    internal: "", // ClickHouse only
+    nullable: true,
+  },
 ];
 
 // to be used client side, insert options for use in filter-builder
@@ -219,11 +278,14 @@ export type ObservationOptions = {
   modelId: Array<SingleValueOption>;
   name: Array<SingleValueOption>;
   traceName: Array<SingleValueOption>;
+  environment: Array<SingleValueOption>;
   scores_avg: Array<string>;
   score_categories: Array<MultiValueOption>;
   promptName: Array<SingleValueOption>;
   tags: Array<SingleValueOption>;
   type: Array<SingleValueOption>;
+  toolNames: Array<SingleValueOption>;
+  calledToolNames: Array<SingleValueOption>;
 };
 
 export function observationsTableColsWithOptions(
@@ -242,6 +304,9 @@ export function observationsTableColsWithOptions(
     if (col.id === "traceName") {
       return formatColumnOptions(col, options?.traceName ?? []);
     }
+    if (col.id === "environment") {
+      return formatColumnOptions(col, options?.environment ?? []);
+    }
     if (col.id === "scores_avg") {
       return formatColumnOptions(col, options?.scores_avg ?? []);
     }
@@ -256,6 +321,12 @@ export function observationsTableColsWithOptions(
     }
     if (col.id === "type") {
       return formatColumnOptions(col, options?.type ?? []);
+    }
+    if (col.id === "toolNames") {
+      return formatColumnOptions(col, options?.toolNames ?? []);
+    }
+    if (col.id === "calledToolNames") {
+      return formatColumnOptions(col, options?.calledToolNames ?? []);
     }
     return col;
   });

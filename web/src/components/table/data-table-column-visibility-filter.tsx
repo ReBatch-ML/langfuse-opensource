@@ -96,10 +96,11 @@ function ColumnVisibilityListItem<TData, TValue>({
   columnVisibility: VisibilityState;
   isOrderable?: boolean;
 }) {
+  const isFixedPosition = column.isFixedPosition ?? false;
   const { attributes, isDragging, listeners, setNodeRef, transform } =
     useSortable({
       id: column.accessorKey,
-      disabled: !isOrderable,
+      disabled: !isOrderable || isFixedPosition,
     });
 
   const isChecked = columnVisibility[column.accessorKey] && column.enableHiding;
@@ -110,7 +111,7 @@ function ColumnVisibilityListItem<TData, TValue>({
       className={cn(
         "flex w-full items-center justify-between rounded-md p-2",
         isDragging ? "opacity-80" : "opacity-100",
-        "group transition-colors hover:bg-muted/50",
+        "hover:bg-muted/50 group transition-colors",
       )}
       style={{
         transform: transform
@@ -123,20 +124,25 @@ function ColumnVisibilityListItem<TData, TValue>({
       <div className="flex items-center gap-2">
         <Checkbox
           id={`col-${column.accessorKey}`}
-          checked={isChecked || !column.enableHiding}
+          checked={isChecked || !column.enableHiding || isFixedPosition}
           onCheckedChange={() => {
-            if (column.enableHiding) toggleColumn(column.accessorKey);
+            if (column.enableHiding && !isFixedPosition)
+              toggleColumn(column.accessorKey);
           }}
-          disabled={!column.enableHiding}
+          disabled={!column.enableHiding || isFixedPosition}
           className="h-4 w-4"
         />
         <span
           className={cn(
             "text-sm capitalize",
-            !column.enableHiding && "opacity-50",
+            (!column.enableHiding || isFixedPosition) && "opacity-50",
           )}
           title={
-            !column.enableHiding ? "This column may not be hidden" : undefined
+            !column.enableHiding
+              ? "This column may not be hidden"
+              : isFixedPosition
+                ? "This column is fixed in position and cannot be hidden"
+                : undefined
           }
         >
           {column.header && typeof column.header === "string"
@@ -151,7 +157,7 @@ function ColumnVisibilityListItem<TData, TValue>({
         )}
       </div>
 
-      {isOrderable && (
+      {isOrderable && !isFixedPosition && (
         <Button
           {...attributes}
           {...listeners}
@@ -195,9 +201,9 @@ function GroupVisibilityHeader<TData, TValue>({
         <div
           ref={setNodeRef}
           className={cn(
-            "flex w-full items-center justify-between gap-2 rounded-md bg-muted/30 p-2",
+            "bg-muted/30 flex w-full items-center justify-between gap-2 rounded-md p-2",
             isDragging ? "opacity-80" : "opacity-100",
-            "group cursor-pointer hover:bg-muted",
+            "hover:bg-muted group cursor-pointer",
           )}
           style={{
             transform: transform
@@ -214,7 +220,7 @@ function GroupVisibilityHeader<TData, TValue>({
                 ? column.header
                 : column.accessorKey}
             </span>
-            <span className="text-xs text-muted-foreground">
+            <span className="text-muted-foreground text-xs">
               ({groupVisibleCount}/{groupTotalCount})
             </span>
           </div>
@@ -253,7 +259,7 @@ function GroupVisibilityHeader<TData, TValue>({
           </div>
         </div>
       </CollapsibleTrigger>
-      <CollapsibleContent className="pl-4 pt-1">{children}</CollapsibleContent>
+      <CollapsibleContent className="pt-1 pl-4">{children}</CollapsibleContent>
     </Collapsible>
   );
 }
@@ -308,10 +314,13 @@ export function DataTableColumnVisibilityFilter<TData, TValue>({
 
   const toggleColumn = useCallback(
     (columnId: string) => {
-      setColumnVisibility((old) => {
+      // calculate target state outside of setState to make it idempotent
+      const currentValue = columnVisibility[columnId];
+      const targetValue = !currentValue;
+      setColumnVisibility((old: any) => {
         const newColumnVisibility = {
           ...old,
-          [columnId]: !old[columnId],
+          [columnId]: targetValue,
         };
         const selectedColumns = Object.keys(newColumnVisibility).filter(
           (key) => newColumnVisibility[key],
@@ -322,8 +331,9 @@ export function DataTableColumnVisibilityFilter<TData, TValue>({
         return newColumnVisibility;
       });
     },
+    // eslint disable is because we don't want the posthog capture as deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [setColumnVisibility],
+    [setColumnVisibility, columnVisibility],
   );
 
   const toggleAllColumns = useCallback(
@@ -358,10 +368,14 @@ export function DataTableColumnVisibilityFilter<TData, TValue>({
     const { active, over } = event;
 
     if (active && over && active.id !== over.id) {
+      const activeColumn = columns.find((col) => col.accessorKey === active.id);
       const overColumn = columns.find((col) => col.accessorKey === over.id);
-      if (overColumn?.isPinned) {
+
+      // Prevent reordering if either active or over column is fixed position
+      if (activeColumn?.isFixedPosition || overColumn?.isFixedPosition) {
         return;
       }
+
       if (isString(active.id) && isString(over.id)) {
         setColumnOrder!((columnOrder) => {
           const oldIndex = columnOrder.indexOf(active.id as string);
@@ -383,13 +397,13 @@ export function DataTableColumnVisibilityFilter<TData, TValue>({
         <DrawerTrigger asChild>
           <Button variant="outline" title="Show/hide columns">
             <span>Columns</span>
-            <div className="ml-1 rounded-sm bg-input px-1 text-xs">{`${count}/${total}`}</div>
+            <div className="bg-input ml-1 rounded-sm px-1 text-xs">{`${count}/${total}`}</div>
           </Button>
         </DrawerTrigger>
         <DrawerContent overlayClassName="bg-primary/10">
           <div className="mx-auto w-full overflow-y-auto md:max-h-full">
             <div className="sticky top-0 z-10">
-              <DrawerHeader className="flex flex-row items-center justify-between rounded-sm bg-background px-3 py-2">
+              <DrawerHeader className="bg-background flex flex-row items-center justify-between rounded-sm px-3 py-2">
                 <DrawerTitle>Column Visibility</DrawerTitle>
                 <div className="flex flex-row gap-2">
                   <Button
@@ -414,7 +428,7 @@ export function DataTableColumnVisibilityFilter<TData, TValue>({
             </div>
             <div>
               <div
-                className="my-1 flex w-full cursor-pointer items-center justify-between rounded-md p-2 hover:bg-muted/50"
+                className="hover:bg-muted/50 my-1 flex w-full cursor-pointer items-center justify-between rounded-md p-2"
                 onClick={() => toggleAllColumns(count, total)}
               >
                 <div className="flex items-center gap-2">
@@ -422,7 +436,7 @@ export function DataTableColumnVisibilityFilter<TData, TValue>({
                     id="toggle-all-columns"
                     variant="ghost"
                     size="sm"
-                    className="hover:!bg-transparent"
+                    className="hover:bg-transparent!"
                     onClick={() => toggleAllColumns(count, total)}
                   >
                     <span className="text-sm font-medium">
@@ -430,7 +444,7 @@ export function DataTableColumnVisibilityFilter<TData, TValue>({
                         ? "Deselect All Columns"
                         : "Select All Columns"}
                     </span>
-                    <div className="ml-1 rounded-sm bg-input px-1 text-xs">{`${count}/${total}`}</div>
+                    <div className="bg-input ml-1 rounded-sm px-1 text-xs">{`${count}/${total}`}</div>
                   </Button>
                 </div>
               </div>
@@ -446,7 +460,7 @@ export function DataTableColumnVisibilityFilter<TData, TValue>({
                     const column = columns.find(
                       (col) => col.accessorKey === columnId,
                     );
-                    if (!column || column.isPinned) return null;
+                    if (!column) return null;
 
                     if (!!column.columns && column.columns.length > 0) {
                       // Column groups

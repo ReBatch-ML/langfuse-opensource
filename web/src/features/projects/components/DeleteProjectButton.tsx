@@ -48,7 +48,7 @@ export function DeleteProjectButton() {
 
   const deleteProject = api.projects.delete.useMutation();
 
-  const form = useForm<z.infer<typeof formSchema>>({
+  const form = useForm({
     resolver: zodResolver(formSchema),
     defaultValues: {
       name: "",
@@ -88,11 +88,7 @@ export function DeleteProjectButton() {
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
-          <form
-            // eslint-disable-next-line @typescript-eslint/no-misused-promises
-            onSubmit={form.handleSubmit(onSubmit)}
-            className="space-y-8"
-          >
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
             <DialogBody>
               <FormField
                 control={form.control}
@@ -111,7 +107,7 @@ export function DeleteProjectButton() {
               <Button
                 type="submit"
                 variant="destructive"
-                loading={deleteProject.isLoading}
+                loading={deleteProject.isPending}
                 className="w-full"
               >
                 Delete project

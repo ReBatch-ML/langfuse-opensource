@@ -12,17 +12,17 @@ import { env } from "./src/env.mjs";
  */
 const cspHeader = `
   default-src 'self' https://*.langfuse.com https://*.langfuse.dev https://*.posthog.com https://*.sentry.io;
-  script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.langfuse.com https://*.langfuse.dev https://challenges.cloudflare.com https://*.sentry.io  https://static.cloudflareinsights.com https://*.stripe.com https://uptime.betterstack.com https://chat.cdn-plain.com;
-  style-src 'self' 'unsafe-inline' https://uptime.betterstack.com https://fonts.googleapis.com;
-  img-src 'self' https: blob: data: http://localhost:*;
+  script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.langfuse.com https://*.langfuse.dev https://challenges.cloudflare.com https://*.sentry.io  https://static.cloudflareinsights.com https://*.stripe.com https://login.microsoftonline.com https://login.microsoft.com https://*.microsoftonline.com;
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://login.microsoftonline.com https://login.microsoft.com https://*.microsoftonline.com;
+  img-src 'self' https: blob: data: http://localhost:* https://prod-uk-services-workspac-workspacefilespublicbuck-vs4gjqpqjkh6.s3.amazonaws.com https://prod-uk-services-attachm-attachmentsbucket28b3ccf-uwfssb4vt2us.s3.eu-west-2.amazonaws.com https://i0.wp.com;
   font-src 'self';
-  frame-src 'self' https://challenges.cloudflare.com https://*.stripe.com;
+  frame-src 'self' https://challenges.cloudflare.com https://*.stripe.com https://login.microsoftonline.com https://login.microsoft.com https://*.microsoftonline.com;
   worker-src 'self' blob:;
   object-src 'none';
   base-uri 'self';
-  form-action 'self';
+  form-action 'self' https://login.microsoftonline.com https://login.microsoft.com https://*.microsoftonline.com;
   frame-ancestors 'none';
-  connect-src 'self' https://*.langfuse.com https://*.langfuse.dev https://*.ingest.us.sentry.io https://*.sentry.io https://uptime.betterstack.com https://chat.uk.plain.com;
+  connect-src 'self' https://*.langfuse.com https://*.langfuse.dev https://*.ingest.us.sentry.io https://*.sentry.io https://chat.uk.plain.com https://*.s3.amazonaws.com https://prod-uk-services-attachm-attachmentsuploadbucket2-1l2e4906o2asm.s3.eu-west-2.amazonaws.com https://login.microsoftonline.com https://login.microsoft.com https://*.microsoftonline.com https://graph.microsoft.com;
   media-src 'self' https: http://localhost:*;
   ${env.LANGFUSE_CSP_ENFORCE_HTTPS === "true" ? "upgrade-insecure-requests; block-all-mixed-content;" : ""}
   ${env.SENTRY_CSP_REPORT_URI ? `report-uri ${env.SENTRY_CSP_REPORT_URI}; report-to csp-endpoint;` : ""}
@@ -47,23 +47,34 @@ const reportToHeader = {
 
 /** @type {import("next").NextConfig} */
 const nextConfig = {
+  // Allow building to alternate directory for parallel build checks while dev server runs
+  distDir: process.env.NEXT_DIST_DIR || ".next",
+  // Agent/browser tooling often targets 127.0.0.1 instead of localhost in dev.
+  allowedDevOrigins: ["127.0.0.1"],
   staticPageGenerationTimeout: 500, // default is 60. Required for build process for amd
   transpilePackages: ["@langfuse/shared", "vis-network/standalone"],
   reactStrictMode: true,
-  experimental: {
-    instrumentationHook: true,
-    serverComponentsExternalPackages: [
-      "dd-trace",
-      "@opentelemetry/api",
-      "@appsignal/opentelemetry-instrumentation-bullmq",
-      "bullmq",
-      "@opentelemetry/sdk-node",
-      "@opentelemetry/instrumentation-winston",
-      "kysely",
-    ],
-  },
+  serverExternalPackages: [
+    "dd-trace",
+    "@opentelemetry/api",
+    "@appsignal/opentelemetry-instrumentation-bullmq",
+    "bullmq",
+    "@opentelemetry/sdk-node",
+    "@opentelemetry/instrumentation-winston",
+  ],
   poweredByHeader: false,
   basePath: env.NEXT_PUBLIC_BASE_PATH,
+  turbopack: {
+    resolveAlias: {
+      "@langfuse/shared": "./packages/shared/src",
+    },
+  },
+  logging: {
+    browserToTerminal: true,
+  },
+  experimental: {
+    turbopackFileSystemCacheForBuild: true,
+  },
 
   /**
    * If you have `experimental: { appDir: true }` set, then you must comment the below `i18n` config
@@ -177,21 +188,15 @@ const nextConfig = {
     ];
   },
 
-  // webassembly support for @dqbd/tiktoken
   webpack(config, { isServer }) {
-    config.experiments = {
-      asyncWebAssembly: true,
-      layers: true,
-    };
-
     // Exclude Datadog packages from webpack bundling to avoid issues
+    // see: https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/dd_libraries/nodejs/#bundling-with-nextjs
     config.externals.push("@datadog/pprof", "dd-trace");
-
     return config;
   },
 };
 
-export default withSentryConfig(nextConfig, {
+const sentryConfig = withSentryConfig(nextConfig, {
   // For all available options, see:
   // https://github.com/getsentry/sentry-webpack-plugin#options
 
@@ -221,7 +226,9 @@ export default withSentryConfig(nextConfig, {
   // tunnelRoute: "/api/monitoring-tunnel",
 
   // Hides source maps from generated client bundles
-  hideSourceMaps: true,
+  sourcemaps: {
+    disable: true,
+  },
 
   // Automatically tree-shake Sentry logger statements to reduce bundle size
   disableLogger: true,
@@ -232,3 +239,5 @@ export default withSentryConfig(nextConfig, {
   // https://vercel.com/docs/cron-jobs
   automaticVercelMonitors: false,
 });
+
+export default sentryConfig;

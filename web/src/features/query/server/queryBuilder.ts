@@ -1,25 +1,38 @@
 import { type z } from "zod";
-import { convertDateToClickhouseDateTime } from "@langfuse/shared/src/server";
 import {
-  type QueryType,
-  type ViewDeclarationType,
-  type views,
-  query as queryModel,
-  type metricAggregations,
-  type granularities,
+  convertDateToClickhouseDateTime,
+  shouldSkipObservationsFinal,
+} from "@langfuse/shared/src/server";
+import type {
+  QueryType,
+  ViewDeclarationType,
+  metricAggregations,
+  granularities,
+  ViewVersion,
+  views,
 } from "../types";
-import { viewDeclarations } from "@/src/features/query/dataModel";
+import {
+  query as queryModel,
+  getValidAggregationsForMeasureType,
+} from "../types";
+import { getViewDeclaration } from "@/src/features/query/dataModel";
 import {
   FilterList,
   createFilterFromFilterState,
+  type Filter,
 } from "@langfuse/shared/src/server";
 import { InvalidRequestError } from "@langfuse/shared";
+import { env } from "@/src/env.mjs";
+import { NULL_IF_EMPTY_RE } from "./nullIfEmptyFilter";
 
 type AppliedDimensionType = {
   table: string;
   sql: string;
   alias?: string;
   relationTable?: string;
+  aggregationFunction?: string;
+  explodeArray?: boolean;
+  pairExpand?: { valuesSql: string; valueAlias: string };
 };
 
 type AppliedMetricType = {
@@ -27,13 +40,28 @@ type AppliedMetricType = {
   aggregation: z.infer<typeof metricAggregations>;
   alias?: string;
   relationTable?: string;
+  aggs?: Record<string, string>;
+  measureName: string; // Original measure name for lookups
+  requiresDimension?: string;
+};
+
+type RawSqlPart = { query: string; params: Record<string, unknown> };
+
+type MappedFilters = {
+  whereFilters: Filter[];
+  whereRawParts: RawSqlPart[];
 };
 
 export class QueryBuilder {
   private chartConfig?: { bins?: number; row_limit?: number };
+  private version: ViewVersion;
 
-  constructor(chartConfig?: { bins?: number; row_limit?: number }) {
+  constructor(
+    chartConfig?: { bins?: number; row_limit?: number },
+    version: ViewVersion = "v1",
+  ) {
     this.chartConfig = chartConfig;
+    this.version = version;
   }
 
   private translateAggregation(metric: AppliedMetricType): string {
@@ -62,6 +90,8 @@ export class QueryBuilder {
         // Get histogram bins from chart config, fallback to 10
         const bins = this.chartConfig?.bins ?? 10;
         return `histogram(${bins})(toFloat64(${metric.alias || metric.sql}))`;
+      case "uniq":
+        return `uniq(${metric.alias || metric.sql})`;
       default:
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const exhaustiveCheck: never = metric.aggregation;
@@ -74,12 +104,7 @@ export class QueryBuilder {
   private getViewDeclaration(
     viewName: z.infer<typeof views>,
   ): ViewDeclarationType {
-    if (!(viewName in viewDeclarations)) {
-      throw new InvalidRequestError(
-        `Invalid view. Must be one of ${Object.keys(viewDeclarations)}`,
-      );
-    }
-    return viewDeclarations[viewName];
+    return getViewDeclaration(viewName, this.version);
   }
 
   private mapDimensions(
@@ -93,7 +118,12 @@ export class QueryBuilder {
         );
       }
       const dim = view.dimensions[dimension.field];
-      return { ...dim, table: dim.relationTable || view.name };
+      return {
+        ...dim,
+        table: dim.relationTable || view.name,
+        explodeArray: dim.explodeArray,
+        pairExpand: dim.pairExpand,
+      };
     });
   }
 
@@ -110,26 +140,226 @@ export class QueryBuilder {
           `Invalid metric ${metric.measure}. Must be one of ${Object.keys(view.measures)}`,
         );
       }
+      const measureDef = view.measures[metric.measure];
+      const validAggs = getValidAggregationsForMeasureType(measureDef.type);
+      if (!validAggs.includes(metric.aggregation)) {
+        throw new InvalidRequestError(
+          `Aggregation "${metric.aggregation}" is not valid for measure "${metric.measure}" (type: ${measureDef.type}). Valid aggregations: ${validAggs.join(", ")}`,
+        );
+      }
       return {
         ...view.measures[metric.measure],
         aggregation: metric.aggregation,
+        aggs: view.measures[metric.measure].aggs,
+        measureName: metric.measure,
       };
     });
+  }
+
+  private validateFilters(
+    filters: z.infer<typeof queryModel>["filters"],
+    view: ViewDeclarationType,
+  ) {
+    for (const filter of filters) {
+      // Validate filters on dimension fields
+      if (filter.column in view.dimensions) {
+        const dimension = view.dimensions[filter.column];
+
+        // Array fields (like tags) validation
+        if (dimension.type === "string[]") {
+          if (filter.type === "string") {
+            throw new InvalidRequestError(
+              `Invalid filter for field '${filter.column}': Array fields require type 'arrayOptions', not 'string'. ` +
+                `Use operators like 'any of', 'all of', or 'none of' with an array of values.`,
+            );
+          }
+
+          // Additional validation: ensure value is array for arrayOptions
+          if (filter.type === "arrayOptions" && !Array.isArray(filter.value)) {
+            throw new InvalidRequestError(
+              `Invalid filter for field '${filter.column}': arrayOptions type requires an array of values, not '${typeof filter.value}'.`,
+            );
+          }
+        }
+      }
+
+      // Special validation for metadata filters
+      else if (filter.column === "metadata") {
+        if (filter.type !== "stringObject") {
+          throw new InvalidRequestError(
+            `Invalid filter for field 'metadata': Metadata filters require type 'stringObject' with a 'key' property, not '${filter.type}'. ` +
+              `Example: {"column": "metadata", "type": "stringObject", "key": "environment", "operator": "=", "value": "production"}`,
+          );
+        }
+
+        // Validate stringObject has required key
+        if (filter.type === "stringObject" && !("key" in filter)) {
+          throw new InvalidRequestError(
+            `Invalid filter for field 'metadata': stringObject type requires a 'key' property to specify which metadata field to filter on. ` +
+              `Example: {"column": "metadata", "type": "stringObject", "key": "environment", "operator": "=", "value": "production"}`,
+          );
+        }
+
+        // Validate stringObject value type
+        if (
+          filter.type === "stringObject" &&
+          typeof filter.value !== "string"
+        ) {
+          throw new InvalidRequestError(
+            // @ts-ignore
+            `Invalid filter for field 'metadata': stringObject type requires a string value, not '${typeof filter.value}'.`,
+          );
+        }
+      }
+    }
+  }
+
+  private actualTableName(view: ViewDeclarationType): string {
+    // Extract actual table name from baseCte (e.g., "events_core events_traces" -> "events_core")
+    return view.baseCte.split(" ")[0];
+  }
+
+  private tableAlias(view: ViewDeclarationType): string {
+    // Return the alias from baseCte if present, otherwise the table name.
+    // e.g., "events_core events_traces" -> "events_traces"
+    //       "traces FINAL"              -> "traces"  (FINAL is a modifier, not an alias)
+    const parts = view.baseCte.split(/\s+/);
+    const clickhouseModifiers = new Set(["FINAL", "SAMPLE", "PREWHERE"]);
+    if (parts.length >= 2 && !clickhouseModifiers.has(parts[1].toUpperCase())) {
+      return parts[1];
+    }
+    return parts[0];
+  }
+
+  /**
+   * Resolves a filter column to a dimension, with fallback for *Name columns.
+   */
+  private resolveDimension(
+    filterColumn: string,
+    view: ViewDeclarationType,
+  ): ViewDeclarationType["dimensions"][string] | undefined {
+    if (filterColumn in view.dimensions) {
+      return view.dimensions[filterColumn];
+    }
+    // Fallback: scoreName/traceName → "name" dimension (LFE-4838)
+    if (filterColumn.endsWith("Name") && "name" in view.dimensions) {
+      return view.dimensions["name"];
+    }
+    return undefined;
+  }
+
+  /**
+   * Builds a WHERE condition for a filterSql dimension:
+   *   (col1 OP X OR col2 OP X) AND dimensionSql OP X
+   *
+   * The OR'd part is pruning-friendly (helps ClickHouse skip blocks).
+   * The exact part uses the dimension's row-level sql expression for correctness.
+   * Both delegate to createFilterFromFilterState for full operator/type support.
+   */
+  private buildFilterSqlWhereCondition(params: {
+    filter: z.infer<typeof queryModel>["filters"][number];
+    whereCols: string[];
+    dimensionSql: string;
+    tableName: string;
+  }): RawSqlPart {
+    const { filter, whereCols, dimensionSql, tableName } = params;
+
+    const syntheticMapping = (clickhouseSelect: string) => [
+      {
+        uiTableName: filter.column,
+        uiTableId: filter.column,
+        clickhouseTableName: tableName,
+        clickhouseSelect,
+        queryPrefix: "",
+      },
+    ];
+
+    // Pruning: one filter per where column, OR'd together
+    const pruneApplied = whereCols.map((col) => {
+      const filters = createFilterFromFilterState(
+        [filter],
+        syntheticMapping(col),
+      );
+      return filters[0].apply();
+    });
+    const pruneQuery = `(${pruneApplied.map((p) => p.query).join(" OR ")})`;
+    const pruneParams = pruneApplied.reduce<Record<string, unknown>>(
+      (acc, p) => ({ ...acc, ...p.params }),
+      {},
+    );
+
+    // Exact match: filter on the dimension's row-level sql expression
+    const exactFilters = createFilterFromFilterState(
+      [filter],
+      syntheticMapping(dimensionSql),
+    );
+    const exactApplied = exactFilters[0].apply();
+
+    return {
+      query: `${pruneQuery} AND ${exactApplied.query}`,
+      params: { ...pruneParams, ...exactApplied.params },
+    };
   }
 
   private mapFilters(
     filters: z.infer<typeof queryModel>["filters"],
     view: ViewDeclarationType,
-  ) {
-    // Transform our filters to match the column mapping format expected by createFilterFromFilterState
-    const columnMappings = filters.map((filter) => {
-      let clickhouseSelect: string;
-      let clickhouseTableName: string = view.name;
-      let type: string;
+  ): MappedFilters {
+    // Validate all filters before processing
+    this.validateFilters(filters, view);
 
-      if (filter.column in view.dimensions) {
-        const dimension = view.dimensions[filter.column];
-        clickhouseSelect = dimension.sql;
+    const actualTableName = this.actualTableName(view);
+
+    const result: MappedFilters = {
+      whereFilters: [],
+      whereRawParts: [],
+    };
+
+    // Separate filters into normal (createFilterFromFilterState) and filterSql-aware
+    const normalFilters: z.infer<typeof queryModel>["filters"] = [];
+    const normalMappings: Array<{
+      uiTableName: string;
+      uiTableId: string;
+      clickhouseTableName: string;
+      clickhouseSelect: string;
+      queryPrefix: string;
+      type: string;
+      emptyEqualsNull?: boolean;
+    }> = [];
+
+    for (const filter of filters) {
+      const dimension = this.resolveDimension(filter.column, view);
+
+      // Dimension with filterSql: pruning OR + exact match, both in WHERE
+      if (dimension?.filterSql) {
+        result.whereRawParts.push(
+          this.buildFilterSqlWhereCondition({
+            filter,
+            whereCols: dimension.filterSql.where,
+            dimensionSql: dimension.sql,
+            tableName: actualTableName,
+          }),
+        );
+        continue;
+      }
+
+      // Normal dimension or special-case filter: build column mapping
+      let clickhouseSelect: string;
+      let queryPrefix: string = "";
+      let clickhouseTableName: string = actualTableName;
+      let type: string;
+      let emptyEqualsNull: boolean | undefined;
+
+      if (dimension) {
+        // Dimension with nullIf(col, ''): use raw column with emptyEqualsNull
+        // flag for index-friendly filtering while preserving '' ≡ NULL semantic.
+        const nullIfMatch = NULL_IF_EMPTY_RE.exec(dimension.sql);
+        if (nullIfMatch) {
+          clickhouseSelect = nullIfMatch[1];
+          emptyEqualsNull = true;
+        } else {
+          clickhouseSelect = dimension.sql;
+        }
         type = "string";
         if (dimension.relationTable) {
           clickhouseTableName = dimension.relationTable;
@@ -144,15 +374,18 @@ export class QueryBuilder {
         //   }
       } else if (filter.column === view.timeDimension) {
         clickhouseSelect = view.timeDimension;
+        queryPrefix = clickhouseTableName;
         type = "datetime";
       } else if (filter.column === "metadata") {
         clickhouseSelect = "metadata";
+        queryPrefix = clickhouseTableName;
         type = "stringObject";
       } else if (filter.column.endsWith("Name")) {
         // Sometimes, the filter does not update correctly and sends us scoreName instead of name for scores, etc.
         // If this happens, none of the conditions above apply, and we use this fallback to avoid raising an error.
         // As this is hard to catch, we include this workaround. (LFE-4838).
         clickhouseSelect = "name";
+        queryPrefix = clickhouseTableName;
         type = "string";
       } else {
         throw new InvalidRequestError(
@@ -160,18 +393,24 @@ export class QueryBuilder {
         );
       }
 
-      return {
+      normalFilters.push(filter);
+      normalMappings.push({
         uiTableName: filter.column,
         uiTableId: filter.column,
         clickhouseTableName,
         clickhouseSelect,
-        queryPrefix: clickhouseTableName,
+        queryPrefix,
         type,
-      };
-    });
+        emptyEqualsNull,
+      });
+    }
 
-    // Use the createFilterFromFilterState function to create proper Clickhouse filters
-    return createFilterFromFilterState(filters, columnMappings);
+    // Create filters for non-filterSql dimensions using existing infrastructure
+    result.whereFilters = createFilterFromFilterState(
+      normalFilters,
+      normalMappings,
+    );
+    return result;
   }
 
   private addStandardFilters(
@@ -181,22 +420,24 @@ export class QueryBuilder {
     fromTimestamp: string,
     toTimestamp: string,
   ) {
+    const actualTableName = this.actualTableName(view);
+
     // Create column mappings for standard filters
     const projectIdMapping = {
       uiTableName: "project_id",
       uiTableId: "project_id",
-      clickhouseTableName: view.name,
+      clickhouseTableName: actualTableName,
       clickhouseSelect: "project_id",
-      queryPrefix: view.name,
+      queryPrefix: actualTableName,
       type: "string",
     };
 
     const timeDimensionMapping = {
       uiTableName: view.timeDimension,
       uiTableId: view.timeDimension,
-      clickhouseTableName: view.name,
+      clickhouseTableName: actualTableName,
       clickhouseSelect: view.timeDimension,
-      queryPrefix: view.name,
+      queryPrefix: actualTableName,
       type: "datetime",
     };
 
@@ -271,6 +512,8 @@ export class QueryBuilder {
     filters: FilterList,
   ) {
     const relationTables = new Set<string>();
+    const actualTableName = this.actualTableName(view);
+
     appliedDimensions.forEach((dimension) => {
       if (dimension.relationTable) {
         relationTables.add(dimension.relationTable);
@@ -282,11 +525,55 @@ export class QueryBuilder {
       }
     });
     filters.forEach((filter) => {
-      if (filter.clickhouseTable !== view.name) {
+      // Only add as relation table if it's not the base table
+      if (
+        filter.clickhouseTable !== view.name &&
+        filter.clickhouseTable !== actualTableName
+      ) {
         relationTables.add(filter.clickhouseTable);
       }
     });
     return relationTables;
+  }
+
+  private canUseSingleLevelQuery(
+    appliedDimensions: AppliedDimensionType[],
+    appliedMetrics: AppliedMetricType[],
+  ): boolean {
+    // Single-level query requires:
+    // 1. All metrics are single-level compatible, which means either:
+    //    a. They have aggs configuration (@@AGGN@@ templates that resolve to function
+    //       calls), OR
+    //    b. They are pairExpand value-alias measures (requiresDimension is set). These
+    //       reference a plain column brought into scope by the ARRAY JOIN clause and
+    //       work correctly with a direct sum()/avg() in a single SELECT.
+    // 2. No custom aggregation functions on dimensions
+    // Measures without either (like uniq(scores.id)) must use the two-level approach.
+    const allMetricsHaveAggs =
+      appliedMetrics.length === 0 ||
+      appliedMetrics.every(
+        (m) => m.aggs !== undefined || m.requiresDimension !== undefined,
+      );
+
+    // Check if any dimension has custom aggregation
+    const hasCustomDimensionAgg = appliedDimensions.some(
+      (d) => d.aggregationFunction !== undefined,
+    );
+
+    return allMetricsHaveAggs && !hasCustomDimensionAgg;
+  }
+
+  private substituteAggTemplates(
+    sql: string,
+    aggs: Record<string, string>,
+  ): string {
+    let result = sql;
+    // Replace each @@AGGN@@ placeholder with its corresponding value
+    for (const [placeholder, replacement] of Object.entries(aggs)) {
+      const marker = `@@${placeholder.toUpperCase()}@@`;
+      result = result.replaceAll(marker, replacement);
+    }
+    return result;
   }
 
   private buildJoins(
@@ -294,6 +581,7 @@ export class QueryBuilder {
     view: ViewDeclarationType,
     filterList: FilterList,
     query: QueryType,
+    skipObservationsFinal: boolean,
   ) {
     const relationJoins = [];
     for (const relationTableName of relationTables) {
@@ -304,7 +592,13 @@ export class QueryBuilder {
       }
 
       const relation = view.tableRelations[relationTableName];
-      let joinStatement = `LEFT JOIN ${relation.name} FINAL ${relation.joinConditionSql}`;
+      // Conditionally add FINAL - skip for observations if flag is set, and respect per-relation useFinal
+      const shouldUseFinal =
+        (relation.useFinal ?? true) &&
+        !(relation.name === "observations" && skipObservationsFinal);
+      const alias =
+        relation.name !== relationTableName ? ` AS ${relationTableName}` : "";
+      let joinStatement = `INNER JOIN ${relation.name}${alias}${shouldUseFinal ? " FINAL" : ""} ${relation.joinConditionSql}`;
 
       // Create time dimension mapping for the relation table
       const relationTimeDimensionMapping = {
@@ -312,7 +606,7 @@ export class QueryBuilder {
         uiTableId: relation.timeDimension,
         clickhouseTableName: relation.name,
         clickhouseSelect: relation.timeDimension,
-        queryPrefix: relation.name,
+        queryPrefix: relationTableName,
         type: "datetime",
       };
 
@@ -347,6 +641,22 @@ export class QueryBuilder {
       relationJoins.push(joinStatement);
     }
     return relationJoins;
+  }
+
+  private buildArrayJoinClause(
+    appliedDimensions: AppliedDimensionType[],
+  ): string {
+    const pairs = appliedDimensions.filter((d) => d.pairExpand);
+    if (pairs.length === 0) return "";
+    // Multiple pairExpand dimensions would produce separate ARRAY JOIN clauses
+    // which ClickHouse executes as a cartesian product — almost certainly wrong.
+    if (pairs.length > 1) {
+      throw new InvalidRequestError(
+        `Only one pairExpand dimension is supported per query. Found: ${pairs.map((d) => d.alias ?? d.sql).join(", ")}`,
+      );
+    }
+    const d = pairs[0];
+    return `ARRAY JOIN\n  ${d.sql} AS ${d.alias ?? d.sql},\n  ${d.pairExpand!.valuesSql} AS ${d.pairExpand!.valueAlias}`;
   }
 
   private buildWhereClause(
@@ -416,6 +726,43 @@ export class QueryBuilder {
     }
   }
 
+  private buildTimeDimensionSql(
+    view: ViewDeclarationType,
+    query: QueryType,
+    wrapInAgg?: string,
+  ): string {
+    if (!query.timeDimension) {
+      return "";
+    }
+
+    const actualTableName = this.actualTableName(view);
+    const granularity =
+      query.timeDimension.granularity === "auto"
+        ? this.determineTimeGranularity(query.fromTimestamp, query.toTimestamp)
+        : query.timeDimension.granularity;
+
+    const timeDimensionSql = this.getTimeDimensionSql(
+      `${actualTableName}.${view.timeDimension}`,
+      granularity,
+    );
+
+    // Optionally wrap in aggregation function (e.g., "any" for two-level inner SELECT).
+    // When the view has a rootEventCondition, prefer the root event's timestamp for
+    // time bucketing. Falls back to min(start_time) when no root event exists for a
+    // trace (e.g. parent_span_id is not populated).
+    let wrappedSql: string;
+    if (wrapInAgg && view.rootEventCondition) {
+      const alias = this.tableAlias(view);
+      wrappedSql = `ifNull(anyIf(toNullable(${timeDimensionSql}), ${alias}.${view.rootEventCondition.condition}), min(${timeDimensionSql}))`;
+    } else if (wrapInAgg) {
+      wrappedSql = `${wrapInAgg}(${timeDimensionSql})`;
+    } else {
+      wrappedSql = timeDimensionSql;
+    }
+
+    return `${wrappedSql} as time_dimension`;
+  }
+
   private buildInnerDimensionsPart(
     appliedDimensions: AppliedDimensionType[],
     query: QueryType,
@@ -426,37 +773,68 @@ export class QueryBuilder {
     // Add regular dimensions
     if (appliedDimensions.length > 0) {
       dimensions += `${appliedDimensions
-        .map(
-          (dimension) =>
-            `any(${dimension.table}.${dimension.sql}) as ${dimension.alias ?? dimension.sql}`,
-        )
+        .map((dimension) => {
+          // Use custom aggregation function if specified (e.g., argMaxIf for events table traces)
+          if (dimension.aggregationFunction) {
+            return `${dimension.aggregationFunction} as ${dimension.alias ?? dimension.sql}`;
+          }
+          // pairExpand key columns (e.g. costType) are added to the inner GROUP BY in
+          // buildInnerSelect, so they are already deterministic grouping keys here.
+          // Unlike regular dimensions (which are not in GROUP BY and need any() to satisfy
+          // ClickHouse's aggregation rules), wrapping in any() would be wrong: it implies
+          // the value is non-deterministic within the group when it's actually the axis
+          // being grouped on. Use a bare reference instead.
+          // Note: the paired value column (e.g. cost_value) is NOT in GROUP BY and IS
+          // wrapped in any() in buildInnerMetricsPart, so the outer query can re-aggregate it.
+          if (dimension.pairExpand) {
+            return `${dimension.alias} as ${dimension.alias ?? dimension.sql}`;
+          }
+          // Explode array dimensions using arrayJoin
+          if (dimension.explodeArray) {
+            return `arrayJoin(${dimension.sql}) as ${dimension.alias ?? dimension.sql}`;
+          }
+          // Default: wrap in any()
+          return `any(${dimension.sql}) as ${dimension.alias ?? dimension.sql}`;
+        })
         .join(",\n")},`;
     }
 
-    // Add time dimension if specified
-    if (query.timeDimension) {
-      const granularity =
-        query.timeDimension.granularity === "auto"
-          ? this.determineTimeGranularity(
-              query.fromTimestamp,
-              query.toTimestamp,
-            )
-          : query.timeDimension.granularity;
-
-      const timeDimensionSql = this.getTimeDimensionSql(
-        `${view.name}.${view.timeDimension}`,
-        granularity,
-      );
-      dimensions += `any(${timeDimensionSql}) as time_dimension,`;
+    // Add time dimension if specified - reuse unified builder with any() wrapper
+    const timeDimensionSql = this.buildTimeDimensionSql(view, query, "any");
+    if (timeDimensionSql) {
+      dimensions += `${timeDimensionSql},`;
     }
 
     return dimensions;
   }
 
   private buildInnerMetricsPart(appliedMetrics: AppliedMetricType[]) {
-    return appliedMetrics.length > 0
-      ? `${appliedMetrics.map((metric) => `${metric.sql} as ${metric.alias || metric.sql}`).join(",\n")}`
-      : "count(*) as count";
+    if (appliedMetrics.length === 0) {
+      return "count(*) as count";
+    }
+
+    return appliedMetrics
+      .map((metric) => {
+        let sql = metric.sql;
+
+        // For two-level queries, substitute @@AGGN@@ with actual agg function from template
+        if (metric.aggs) {
+          sql = this.substituteAggTemplates(sql, metric.aggs);
+        }
+
+        // pairExpand value-alias measures (e.g. costByType, usageByType) reference a raw
+        // column brought into scope by the ARRAY JOIN clause. That column is not in the
+        // inner GROUP BY, so wrap it in any() to satisfy ClickHouse. The outer query then
+        // applies the real aggregation. We scope this to requiresDimension metrics only —
+        // other measures use @@AGGN@@ templates that resolve to function calls, so they
+        // never need this treatment.
+        if (metric.requiresDimension && !sql.includes("(")) {
+          sql = `any(${sql})`;
+        }
+
+        return `${sql} as ${metric.alias || metric.sql}`;
+      })
+      .join(",\n");
   }
 
   private buildInnerSelect(
@@ -464,15 +842,30 @@ export class QueryBuilder {
     innerDimensionsPart: string,
     innerMetricsPart: string,
     fromClause: string,
+    appliedDimensions: AppliedDimensionType[],
   ) {
+    const actualTableName = this.actualTableName(view);
+    // Use actual SQL from view definition for id column (handles events.span_id -> id mapping)
+    const idSql = view.dimensions.id?.sql || `${actualTableName}.id`;
+    const projectIdSql = `${actualTableName}.project_id`;
+
+    // Build inner GROUP BY - include exploded array dimensions (they must be in GROUP BY after arrayJoin)
+    // Also include pairExpand dimensions (their key column is in scope after ARRAY JOIN clause)
+    const groupByParts = [projectIdSql, idSql];
+    for (const dim of appliedDimensions) {
+      if (dim.explodeArray || dim.pairExpand) {
+        groupByParts.push(dim.alias ?? dim.sql);
+      }
+    }
+
     return `
       SELECT
-        ${view.name}.project_id,
-        ${view.name}.id,
+        ${projectIdSql},
+        ${idSql},
         ${innerDimensionsPart}
         ${innerMetricsPart}
         ${fromClause}
-      GROUP BY ${view.name}.project_id, ${view.name}.id`;
+      GROUP BY ${groupByParts.join(", ")}`;
   }
 
   private buildOuterDimensionsPart(
@@ -588,6 +981,15 @@ export class QueryBuilder {
     return ` WITH FILL FROM ${this.getTimeDimensionSql("{fillFromDate: DateTime64(3)}", granularity)} TO ${this.getTimeDimensionSql("{fillToDate: DateTime64(3)}", granularity)} STEP ${step}`;
   }
 
+  /**
+   * Builds a LIMIT clause for the query if row_limit is specified in chartConfig.
+   */
+  private buildLimitClause(): string {
+    const rowLimit = this.chartConfig?.row_limit;
+    if (!rowLimit) return "";
+    return `LIMIT ${rowLimit}`;
+  }
+
   private buildOuterSelect(
     outerDimensionsPart: string,
     outerMetricsPart: string,
@@ -595,6 +997,7 @@ export class QueryBuilder {
     groupByClause: string,
     orderByClause: string,
     withFillClause: string,
+    limitClause: string,
   ) {
     return `
       SELECT
@@ -603,7 +1006,99 @@ export class QueryBuilder {
       FROM (${innerQuery})
       ${groupByClause}
       ${orderByClause}
-      ${withFillClause}`;
+      ${withFillClause}
+      ${limitClause}`;
+  }
+
+  private buildSingleLevelMetricsPart(
+    appliedMetrics: AppliedMetricType[],
+  ): string {
+    if (appliedMetrics.length === 0) {
+      return "count(*) as count";
+    }
+
+    return appliedMetrics
+      .map((m) => {
+        // For single-level: REMOVE @@AGGN@@ markers (strip template aggregations)
+        let baseSql = m.sql;
+        if (m.aggs) {
+          for (const placeholder of Object.keys(m.aggs)) {
+            const marker = `@@${placeholder.toUpperCase()}@@`;
+            baseSql = baseSql.replaceAll(marker, "");
+          }
+        }
+        // Apply user-requested aggregation to the stripped SQL
+        // Important: Clear alias so translateAggregation uses the sql directly
+        const aggregatedSql = this.translateAggregation({
+          ...m,
+          sql: baseSql,
+          alias: undefined, // Force use of sql instead of alias
+        });
+        return `${aggregatedSql} as ${m.aggregation}_${m.alias || m.sql}`;
+      })
+      .join(",\n");
+  }
+
+  private buildSingleLevelDimensionsPart(
+    appliedDimensions: AppliedDimensionType[],
+    query: QueryType,
+    view: ViewDeclarationType,
+  ): string {
+    let dimensionsPart = "";
+    if (appliedDimensions.length > 0) {
+      dimensionsPart =
+        appliedDimensions
+          .map((d) => {
+            if (d.pairExpand) {
+              // Bare reference — already projected by the ARRAY JOIN clause
+              return `${d.alias} as ${d.alias ?? d.sql}`;
+            }
+            if (d.explodeArray) {
+              return `arrayJoin(${d.sql}) as ${d.alias ?? d.sql}`;
+            }
+            return `${d.sql} as ${d.alias ?? d.sql}`;
+          })
+          .join(",\n") + ",\n";
+    }
+
+    // Reuse unified time dimension builder (no wrapper for single-level)
+    const timeDimensionSql = this.buildTimeDimensionSql(view, query);
+    if (timeDimensionSql) {
+      dimensionsPart += `${timeDimensionSql},\n`;
+    }
+
+    return dimensionsPart;
+  }
+
+  private buildSingleLevelSelect(
+    view: ViewDeclarationType,
+    appliedDimensions: AppliedDimensionType[],
+    appliedMetrics: AppliedMetricType[],
+    query: QueryType,
+    fromClause: string,
+    groupByClause: string,
+    orderByClause: string,
+    withFillClause: string,
+    limitClause: string,
+  ): string {
+    // Build dimensions using dedicated helper
+    const dimensionsPart = this.buildSingleLevelDimensionsPart(
+      appliedDimensions,
+      query,
+      view,
+    );
+
+    // Build optimized metrics (strip templates, apply user aggregation)
+    const metricsPart = this.buildSingleLevelMetricsPart(appliedMetrics);
+
+    return `
+      SELECT
+        ${dimensionsPart}${metricsPart}
+      ${fromClause}
+      ${groupByClause}
+      ${orderByClause}
+      ${withFillClause}
+      ${limitClause}`;
   }
 
   /**
@@ -660,7 +1155,7 @@ export class QueryBuilder {
 
       // Check if the field is a metric (with aggregation prefix)
       const metricNamePattern =
-        /^(sum|avg|count|max|min|p50|p75|p90|p95|p99)_(.+)$/;
+        /^(sum|avg|count|max|min|p50|p75|p90|p95|p99|uniq)_(.+)$/;
       const metricMatch = item.field.match(metricNamePattern);
 
       if (metricMatch) {
@@ -699,7 +1194,8 @@ export class QueryBuilder {
 
   /**
    * We want to build a ClickHouse query based on the query provided and the viewDeclaration that was selected.
-   * The final query should always follow this pattern:
+   *
+   * When enableSingleLevelOptimization is false (default), the query follows a two-level pattern:
    * ```
    *   SELECT
    *     <...dimensions>,
@@ -718,31 +1214,86 @@ export class QueryBuilder {
    *   GROUP BY <...dimensions>
    *   ORDER BY <fields with directions>
    * ```
+   *
+   * When `enableSingleLevelOptimization` is true AND `canUseSingleLevelQuery()` returns true,
+   * the query uses a single-level pattern (skips high-cardinality GROUP BY):
+   * ```
+   *   SELECT
+   *     <...dimensions>,
+   *     <...metrics.map(metric => `${metric.aggregation}(stripped ${metric.sql})`>
+   *   FROM <baseCte>
+   *   (...tableRelations.joinConditionSql)
+   *   WHERE <...filters>
+   *   GROUP BY <...dimensions>
+   *   ORDER BY <fields with directions>
+   * ```
+   *
+   * Note: Template placeholders @@AGGN@@ in metric SQL are substituted with:
+   * - Two-level mode: Actual aggregation from aggs config (e.g., sum, any, sumMap)
+   * - Single-level mode: Stripped out, user's aggregation applied directly to raw expression
    */
-  public build(
+  public async build(
     query: QueryType,
     projectId: string,
-  ): { query: string; parameters: Record<string, unknown> } {
+    enableSingleLevelOptimization: boolean = false,
+  ): Promise<{ query: string; parameters: Record<string, unknown> }> {
     // Run zod validation
     const parseResult = queryModel.safeParse(query);
     if (!parseResult.success) {
       throw new InvalidRequestError(
-        `Invalid query: ${JSON.stringify(parseResult.error.errors)}`,
+        `Invalid query: ${JSON.stringify(parseResult.error.issues)}`,
       );
     }
 
     // Initialize parameters object
     const parameters: Record<string, unknown> = {};
 
-    // Get view declaration
-    const view = this.getViewDeclaration(query.view);
+    // Check if we should skip FINAL modifier for observations (OTEL optimization)
+    const skipObservationsFinal = await shouldSkipObservationsFinal(projectId);
+    let view = this.getViewDeclaration(query.view);
+
+    // Events table never needs FINAL modifier (already deduplicated)
+    if (view.name === "events-observations") {
+      // baseCte already set to "events_core" in view definition (no FINAL)
+      // No changes needed, just using as-is
+    }
+    // Skip FINAL on observations base table if OTEL project
+    else if (view.name === "observations" && skipObservationsFinal) {
+      view = {
+        ...view,
+        baseCte: "observations", // Remove FINAL (was "observations FINAL")
+      };
+    }
 
     // Map dimensions and metrics
     const appliedDimensions = this.mapDimensions(query.dimensions, view);
     const appliedMetrics = this.mapMetrics(query.metrics, view);
 
-    // Create a new FilterList with the mapped filters
-    let filterList = new FilterList(this.mapFilters(query.filters, view));
+    // Auto-include dimensions required by pairExpand-dependent measures.
+    // e.g. costByType.requiresDimension = "costType": without that dimension the
+    // ARRAY JOIN is never emitted and ClickHouse errors with "unknown column cost_value".
+    for (const metric of appliedMetrics) {
+      if (
+        metric.requiresDimension &&
+        !appliedDimensions.some((d) => d.alias === metric.requiresDimension)
+      ) {
+        const requiredDimDef = view.dimensions[metric.requiresDimension];
+        if (requiredDimDef) {
+          appliedDimensions.push({
+            ...requiredDimDef,
+            table: requiredDimDef.relationTable || view.name,
+            pairExpand: requiredDimDef.pairExpand,
+          });
+        }
+      }
+    }
+
+    // Create filters: normal WHERE filters + raw WHERE parts (filterSql pruning + exact match)
+    const { whereFilters, whereRawParts } = this.mapFilters(
+      query.filters,
+      view,
+    );
+    let filterList = new FilterList(whereFilters);
 
     // Add standard filters (project_id, timestamps)
     filterList = this.addStandardFilters(
@@ -769,35 +1320,70 @@ export class QueryBuilder {
         view,
         filterList,
         query,
+        skipObservationsFinal,
       );
       fromClause += ` ${relationJoins.join(" ")}`;
+    }
+
+    // ARRAY JOIN must appear after regular JOINs and before WHERE
+    const arrayJoinClause = this.buildArrayJoinClause(appliedDimensions);
+    if (arrayJoinClause) {
+      fromClause += `\n${arrayJoinClause}`;
     }
 
     // Build WHERE clause with parameters
     fromClause += this.buildWhereClause(filterList, parameters);
 
-    // Build inner SELECT parts
-    const innerDimensionsPart = this.buildInnerDimensionsPart(
-      appliedDimensions,
-      query,
-      view,
-    );
-    const innerMetricsPart = this.buildInnerMetricsPart(appliedMetrics);
+    // Append raw WHERE pruning parts (OR'd conditions from filterSql.where)
+    for (const part of whereRawParts) {
+      fromClause += ` AND ${part.query}`;
+      Object.assign(parameters, part.params);
+    }
 
-    // Build inner SELECT
-    const innerQuery = this.buildInnerSelect(
-      view,
-      innerDimensionsPart,
-      innerMetricsPart,
-      fromClause,
-    );
+    // When rootEventCondition is set, add a subquery filter to restrict rows
+    // to traces whose root event has timeDimension in the query window.
+    // The existing start_time filter above is kept for ClickHouse partition pruning.
+    // For wide time windows (default >7 days), the subquery is skipped as the
+    // root-event check has diminishing returns and hurts performance.
+    // Set LANGFUSE_ROOT_EVENT_CONDITION_MAX_WINDOW_HOURS=0 to always apply the filter.
+    if (view.rootEventCondition) {
+      const windowMs =
+        new Date(query.toTimestamp).getTime() -
+        new Date(query.fromTimestamp).getTime();
+      const windowHours = windowMs / (1000 * 60 * 60);
+      const thresholdHours = env.LANGFUSE_ROOT_EVENT_CONDITION_MAX_WINDOW_HOURS;
 
-    // Build outer SELECT parts
-    const outerDimensionsPart = this.buildOuterDimensionsPart(
-      appliedDimensions,
-      !!query.timeDimension,
-    );
-    const outerMetricsPart = this.buildOuterMetricsPart(appliedMetrics);
+      if (thresholdHours === 0 || windowHours <= thresholdHours) {
+        // Falls back gracefully: if no root events exist in the window at all
+        // (e.g. parent_span_id is never populated), the filter is skipped via NOT EXISTS.
+        const uid = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+        const fromP = `subFrom${uid}`;
+        const toP = `subTo${uid}`;
+        const projP = `subProj${uid}`;
+        const baseTable = this.actualTableName(view);
+        const { column, condition } = view.rootEventCondition;
+        const subquery =
+          `SELECT ${column} FROM ${baseTable} ` +
+          `WHERE project_id = {${projP}: String} ` +
+          `AND ${condition} ` +
+          `AND ${view.timeDimension} >= {${fromP}: DateTime64(3)} ` +
+          `AND ${view.timeDimension} <= {${toP}: DateTime64(3)}`;
+        fromClause +=
+          ` AND (${baseTable}.${column} IN (${subquery})` +
+          ` OR NOT EXISTS (${subquery} LIMIT 1))`;
+        parameters[fromP] = new Date(query.fromTimestamp).getTime();
+        parameters[toP] = new Date(query.toTimestamp).getTime();
+        parameters[projP] = projectId;
+      }
+    }
+
+    // Check if single-level optimization is applicable
+    // Note: Relation tables are OK as long as measures have aggs configuration
+    const canOptimize =
+      enableSingleLevelOptimization &&
+      this.canUseSingleLevelQuery(appliedDimensions, appliedMetrics);
+
+    // Build GROUP BY clause (used by both single-level and two-level queries)
     const groupByClause = this.buildGroupByClause(
       appliedDimensions,
       !!query.timeDimension,
@@ -823,15 +1409,60 @@ export class QueryBuilder {
       parameters,
     );
 
-    // Build final query
-    const sql = this.buildOuterSelect(
-      outerDimensionsPart,
-      outerMetricsPart,
-      innerQuery,
-      groupByClause,
-      orderByClause,
-      withFillClause,
-    );
+    // Build LIMIT clause for row limiting
+    const limitClause = this.buildLimitClause();
+
+    // Build final query - branch based on optimization
+    let sql: string;
+    if (canOptimize) {
+      // Single-level query: Skip inner SELECT
+      sql = this.buildSingleLevelSelect(
+        view,
+        appliedDimensions,
+        appliedMetrics,
+        query,
+        fromClause,
+        groupByClause,
+        orderByClause,
+        withFillClause,
+        limitClause,
+      );
+    } else {
+      // Two-level query: Original approach
+      // Build inner SELECT parts
+      const innerDimensionsPart = this.buildInnerDimensionsPart(
+        appliedDimensions,
+        query,
+        view,
+      );
+      const innerMetricsPart = this.buildInnerMetricsPart(appliedMetrics);
+
+      // Build inner SELECT
+      const innerQuery = this.buildInnerSelect(
+        view,
+        innerDimensionsPart,
+        innerMetricsPart,
+        fromClause,
+        appliedDimensions,
+      );
+
+      // Build outer SELECT parts
+      const outerDimensionsPart = this.buildOuterDimensionsPart(
+        appliedDimensions,
+        !!query.timeDimension,
+      );
+      const outerMetricsPart = this.buildOuterMetricsPart(appliedMetrics);
+
+      sql = this.buildOuterSelect(
+        outerDimensionsPart,
+        outerMetricsPart,
+        innerQuery,
+        groupByClause,
+        orderByClause,
+        withFillClause,
+        limitClause,
+      );
+    }
 
     return {
       query: sql,

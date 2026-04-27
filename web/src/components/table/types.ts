@@ -13,10 +13,12 @@ type ExtendedColumnDef<TData extends RowData, TValue = unknown> = ColumnDef<
 > & {
   defaultHidden?: boolean;
   headerTooltip?: {
-    description: string;
+    description: React.ReactNode;
     href?: string;
   };
-  isPinned?: boolean; // if true, column cannot be reordered
+  isFixedPosition?: boolean; // if true, column cannot be reordered
+  isPinnedLeft?: boolean; // if true, column will be pinned to left side
+  loadingCell?: React.ReactNode | (() => React.ReactNode);
 };
 
 // limits types of defined tanstack ColumnDef properties to specific subset of tanstack type union

@@ -1,10 +1,21 @@
+import { getScoreDataTypeIcon } from "@/src/features/scores/lib/scoreColumns";
 import {
   type ScoreAggregate,
   type ScoreSimplified,
-  type APIScoreV2,
   type ScoreSourceType,
-  type ScoreDataType,
+  type ScoreDomain,
+  type ScoreDataTypeType,
+  type ListableScore,
+  type ListableScoreDataType,
 } from "@langfuse/shared";
+
+/**
+ * Normalizes score names for comparison by converting - and . to _
+ * "-" and "." reserved for splitting in namespace
+ */
+export const normalizeScoreName = (name: string): string => {
+  return name.replaceAll(/[-\.]/g, "_");
+};
 
 export const composeAggregateScoreKey = ({
   name,
@@ -13,15 +24,51 @@ export const composeAggregateScoreKey = ({
 }: {
   name: string;
   source: ScoreSourceType;
-  dataType: ScoreDataType;
+  dataType: ScoreDataTypeType;
   keyPrefix?: string;
 }): string => {
-  const formattedName = name.replaceAll(/[-\.]/g, "_"); // "-" and "." reserved for splitting in namespace
+  const formattedName = normalizeScoreName(name);
   return `${formattedName}-${source}-${dataType}`;
 };
 
-type ScoreToAggregate = (APIScoreV2 | ScoreSimplified) & {
-  hasMetadata?: boolean;
+export const decomposeAggregateScoreKey = (
+  key: string,
+): {
+  name: string;
+  source: ScoreSourceType;
+  dataType: ScoreDataTypeType;
+} => {
+  const [name, source, dataType] = key.split("-");
+  return {
+    name,
+    source: source as ScoreSourceType,
+    dataType: dataType as ScoreDataTypeType,
+  };
+};
+
+export const getScoreLabelFromKey = (key: string): string => {
+  const { name, source, dataType } = decomposeAggregateScoreKey(key);
+  return `${getScoreDataTypeIcon(dataType)} ${name} (${source.toLowerCase()})`;
+};
+
+export type ScoreToAggregate =
+  | (Omit<ScoreDomain, "dataType"> & {
+      dataType: ListableScore["dataType"];
+      hasMetadata?: boolean;
+    })
+  | (ScoreSimplified & {
+      hasMetadata?: boolean;
+    });
+
+/**
+ * Maps score data types to aggregate types for processing.
+ * Boolean scores are treated as categorical since they share the same
+ * aggregation logic (value counting vs numeric averaging).
+ */
+export const resolveAggregateType = (
+  dataType: ListableScoreDataType,
+): "NUMERIC" | "CATEGORICAL" => {
+  return dataType === "NUMERIC" ? "NUMERIC" : "CATEGORICAL";
 };
 
 export const aggregateScores = <T extends ScoreToAggregate>(
@@ -49,17 +96,19 @@ export const aggregateScores = <T extends ScoreToAggregate>(
    * When the aggregate contains multiple values, these extra fields are undefined.
    */
   return Object.entries(groupedScores).reduce((acc, [key, scores]) => {
-    if (scores[0].dataType === "NUMERIC") {
+    const aggregateType = resolveAggregateType(scores[0].dataType);
+    if (aggregateType === "NUMERIC") {
       const values = scores.map((score) => score.value ?? 0);
       if (!Boolean(values.length)) return acc;
       const average = values.reduce((a, b) => a + b, 0) / values.length;
       acc[key] = {
-        type: "NUMERIC",
+        type: aggregateType,
         values,
         average,
         comment: values.length === 1 ? scores[0].comment : undefined,
         id: values.length === 1 ? scores[0].id : undefined,
         hasMetadata: values.length === 1 ? scores[0].hasMetadata : undefined,
+        timestamp: values.length === 1 ? scores[0].timestamp : undefined,
       };
     } else {
       const values = scores.map((score) => score.stringValue ?? "n/a");
@@ -72,7 +121,7 @@ export const aggregateScores = <T extends ScoreToAggregate>(
         {} as Record<string, number>,
       );
       acc[key] = {
-        type: "CATEGORICAL",
+        type: aggregateType,
         values,
         valueCounts: Object.entries(valueCounts).map(([value, count]) => ({
           value,
@@ -81,6 +130,7 @@ export const aggregateScores = <T extends ScoreToAggregate>(
         comment: values.length === 1 ? scores[0].comment : undefined,
         id: values.length === 1 ? scores[0].id : undefined,
         hasMetadata: values.length === 1 ? scores[0].hasMetadata : undefined,
+        timestamp: values.length === 1 ? scores[0].timestamp : undefined,
       };
     }
     return acc;

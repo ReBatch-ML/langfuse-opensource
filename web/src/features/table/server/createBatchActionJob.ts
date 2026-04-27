@@ -16,7 +16,12 @@ import { TRPCError } from "@trpc/server";
 
 type CreateBatchActionJob = {
   projectId: string;
-  actionId: ActionId;
+  actionId: Exclude<
+    ActionId,
+    | "observation-add-to-dataset"
+    | "observation-run-batched-evaluation"
+    | "experiment-compare"
+  >;
   tableName: BatchExportTableName;
   actionType: BatchActionType;
   session: {

@@ -10,6 +10,7 @@ const langfuseUrls = {
   EU: "https://cloud.langfuse.com",
   STAGING: "https://staging.langfuse.com",
   HIPAA: "https://hipaa.cloud.langfuse.com",
+  JP: "https://jp.cloud.langfuse.com",
 };
 
 type SendMembershipInvitationParams = {
@@ -26,6 +27,8 @@ type SendMembershipInvitationParams = {
   inviterName: string;
   inviterEmail: string;
   orgName: string;
+  orgId: string;
+  userExists: boolean;
 };
 
 export const sendMembershipInvitationEmail = async ({
@@ -34,6 +37,8 @@ export const sendMembershipInvitationEmail = async ({
   inviterName,
   inviterEmail,
   orgName,
+  orgId,
+  userExists,
 }: SendMembershipInvitationParams) => {
   if (!env.EMAIL_FROM_ADDRESS || !env.SMTP_CONNECTION_URL) {
     logger.error(
@@ -46,6 +51,7 @@ export const sendMembershipInvitationEmail = async ({
     env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION === "US" ||
     env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION === "EU" ||
     env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION === "HIPAA" ||
+    env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION === "JP" ||
     env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION === "STAGING"
       ? langfuseUrls[env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION]
       : env.NEXTAUTH_URL;
@@ -58,16 +64,22 @@ export const sendMembershipInvitationEmail = async ({
     return;
   }
 
+  // Generate appropriate link based on whether user exists
+  const inviteLink = userExists
+    ? `${authUrl}/organization/${orgId}`
+    : `${authUrl}/auth/sign-up?targetPath=${encodeURIComponent(`/organization/${orgId}`)}&email=${encodeURIComponent(to)}`;
+
   try {
     const mailer = createTransport(parseConnectionUrl(env.SMTP_CONNECTION_URL));
 
-    const htmlTemplate = render(
+    const htmlTemplate = await render(
       MembershipInvitationTemplate({
         invitedByUsername: inviterName,
         invitedByUserEmail: inviterEmail,
         orgName: orgName,
         receiverEmail: to,
-        inviteLink: authUrl,
+        inviteLink: inviteLink,
+        userExists: userExists,
         emailFromAddress: env.EMAIL_FROM_ADDRESS,
         langfuseCloudRegion: env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION,
       }),
@@ -76,7 +88,7 @@ export const sendMembershipInvitationEmail = async ({
     await mailer.sendMail({
       to,
       from: `Langfuse <${env.EMAIL_FROM_ADDRESS}>`,
-      subject: `${inviterName} invited you to join "${orgName}" organization on Langfuse`,
+      subject: `${inviterName} invited you to join the "${orgName}" organization on Langfuse`,
       html: htmlTemplate,
     });
   } catch (error) {

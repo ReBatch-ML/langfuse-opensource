@@ -1,12 +1,14 @@
 import z from "zod";
 import { prisma } from "../../../db";
-import { LangfuseNotFoundError } from "../../../errors";
-import { LLMApiKeySchema, ZodModelConfig } from "../../llm/types";
+import { ForbiddenError, LangfuseNotFoundError } from "../../../errors";
+import { LLMAdapter, LLMApiKeySchema, ZodModelConfig } from "../../llm/types";
+import { testModelCall } from "../../llm/testModelCall";
 
 type ValidConfig = {
   provider: string;
   model: string;
   modelParams: z.infer<typeof ZodModelConfig>;
+  adapter: LLMAdapter;
 };
 
 export class DefaultEvalModelService {
@@ -44,6 +46,23 @@ export class DefaultEvalModelService {
     if (!llmApiKey) {
       throw new LangfuseNotFoundError(
         `API key for provider ${provider} in project ${projectId} not found`,
+      );
+    }
+
+    try {
+      if (LLMApiKeySchema.safeParse(llmApiKey).success) {
+        // Make a test structured output call to validate the LLM key
+        await testModelCall({
+          provider,
+          model,
+          apiKey: llmApiKey as z.infer<typeof LLMApiKeySchema>,
+          modelConfig: modelParams,
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      throw new ForbiddenError(
+        `Model configuration not valid for evaluation. ${message}`,
       );
     }
 
@@ -90,7 +109,7 @@ export class DefaultEvalModelService {
       const result = ZodModelConfig.safeParse(config.modelParams);
       if (!result.success) {
         errors.push(
-          ...result.error.errors.map(
+          ...result.error.issues.map(
             (err) => `Model parameter error: ${err.message}`,
           ),
         );
@@ -118,6 +137,7 @@ export class DefaultEvalModelService {
           model: string;
           modelParams?: z.infer<typeof ZodModelConfig>;
           apiKey: z.infer<typeof LLMApiKeySchema>;
+          adapter: LLMAdapter;
         };
       }
     | {
@@ -156,7 +176,7 @@ export class DefaultEvalModelService {
     if (!selectedModel) {
       return {
         valid: false,
-        error: `No default model or custom model found for project ${projectId}.`,
+        error: `No default model or custom model configured for project ${projectId}`,
       };
     }
 
@@ -173,7 +193,7 @@ export class DefaultEvalModelService {
     if (!parsedKey.success) {
       return {
         valid: false,
-        error: `API key for provider "${selectedModel.provider}" not found in project ${projectId}.`,
+        error: `API key for provider "${selectedModel.provider}" not found in project ${projectId}`,
       };
     }
 

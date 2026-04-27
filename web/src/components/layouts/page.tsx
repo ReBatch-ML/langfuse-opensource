@@ -20,16 +20,19 @@ const Page = ({
     <div
       className={cn(
         "flex flex-col",
-        scrollable ? "relative flex min-h-svh flex-1" : "h-full",
+        scrollable ? "min-h-screen-with-banner relative flex flex-1" : "h-full",
       )}
+      id="page"
     >
       <header className="sticky top-0 z-50 w-full">
-        <PageHeader {...headerProps} container={false} />
+        <PageHeader {...headerProps} container={false} className={"top-0"} />
       </header>
       <main
         className={cn(
           "flex flex-1 flex-col",
-          scrollable ? "relative flex min-h-svh" : "h-full overflow-hidden",
+          scrollable
+            ? "min-h-screen-with-banner relative flex"
+            : "h-full overflow-hidden",
           withPadding && "p-3",
         )}
       >

@@ -1,6 +1,11 @@
 "use client";
 import { type OrderByState } from "@langfuse/shared";
-import React, { useState, useMemo, useCallback, useContext } from "react";
+import React, {
+  useState,
+  useMemo,
+  useCallback,
+  type CSSProperties,
+} from "react";
 import DocPopup from "@/src/components/layouts/doc-popup";
 import { DataTablePagination } from "@/src/components/table/data-table-pagination";
 import {
@@ -8,6 +13,7 @@ import {
   type RowHeight,
   getRowHeightTailwindClass,
 } from "@/src/components/table/data-table-row-height-switch";
+import { TableTextLoadingCell } from "@/src/components/table/loading-cells";
 import { type LangfuseColumnDef } from "@/src/components/table/types";
 import { type ModelTableRow } from "@/src/components/table/use-cases/models";
 import {
@@ -22,6 +28,8 @@ import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePos
 import { cn } from "@/src/utils/tailwind";
 import {
   type ColumnOrderState,
+  type ColumnPinningState,
+  type Column,
   flexRender,
   getCoreRowModel,
   getFilteredRowModel,
@@ -33,10 +41,10 @@ import {
   type VisibilityState,
   type Row,
 } from "@tanstack/react-table";
-import { TablePeekView } from "@/src/components/table/peek";
-import { type PeekViewProps } from "@/src/components/table/peek/hooks/usePeekView";
-import { usePeekView } from "@/src/components/table/peek/hooks/usePeekView";
-import { isEqual } from "lodash";
+import { type DataTablePeekViewProps } from "@/src/components/table/peek";
+import isEqual from "lodash/isEqual";
+import { useRouter } from "next/router";
+import { useColumnSizing } from "@/src/components/table/hooks/useColumnSizing";
 
 interface DataTableProps<TData, TValue> {
   columns: LangfuseColumnDef<TData, TValue>[];
@@ -46,6 +54,8 @@ interface DataTableProps<TData, TValue> {
     onChange: OnChangeFn<PaginationState>;
     state: PaginationState;
     options?: number[];
+    hideTotalCount?: boolean;
+    canJumpPages?: boolean;
   };
   rowSelection?: RowSelectionState;
   setRowSelection?: OnChangeFn<RowSelectionState>;
@@ -56,14 +66,20 @@ interface DataTableProps<TData, TValue> {
   orderBy?: OrderByState;
   setOrderBy?: (s: OrderByState) => void;
   help?: { description: string; href: string };
+  noResultsMessage?: React.ReactNode;
   rowHeight?: RowHeight;
   customRowHeights?: CustomHeights;
   className?: string;
   shouldRenderGroupHeaders?: boolean;
-  onRowClick?: (row: TData) => void;
-  peekView?: PeekViewProps<TData>;
-  pinFirstColumn?: boolean;
+  onRowClick?: (row: TData, event?: React.MouseEvent) => void;
+  /** Used for row click handling and MemoizedTableBody snapshot only. Render <TablePeekView> as a sibling outside DataTable. */
+  peekView?: DataTablePeekViewProps;
   hidePagination?: boolean;
+  tableName: string;
+  getRowClassName?: (row: TData) => string;
+  highlightAllRows?: boolean;
+  topAlignCells?: boolean;
+  cellPadding?: "compact" | "comfortable";
 }
 
 export interface AsyncTableData<T> {
@@ -98,7 +114,44 @@ function isValidCssVariableName({
   return regex.test(name);
 }
 
-const SelectedRowContext = React.createContext<string | undefined>(undefined);
+const INTERACTIVE_ROW_CLICK_SELECTOR =
+  "a, button, input, select, textarea, summary, [role='button'], [role='link']";
+
+export const shouldIgnoreRowClickTarget = (target: EventTarget | null) => {
+  if (!(target instanceof Element)) return false;
+
+  return Boolean(target.closest(INTERACTIVE_ROW_CLICK_SELECTOR));
+};
+
+// These are the important styles to make sticky column pinning work!
+const getCommonPinningStyles = <TData,>(
+  column: Column<TData>,
+): CSSProperties => {
+  const isPinned = column.getIsPinned();
+
+  return {
+    left: isPinned === "left" ? `${column.getStart("left")}px` : undefined,
+    right: isPinned === "right" ? `${column.getAfter("right")}px` : undefined,
+    position: isPinned ? "sticky" : "relative",
+    width: column.getSize(),
+    zIndex: isPinned ? 10 : 0,
+    backgroundColor: isPinned ? "hsl(var(--background))" : undefined,
+  };
+};
+
+// Get additional CSS classes for pinned columns
+const getPinningClasses = <TData,>(column: Column<TData>): string => {
+  const isPinned = column.getIsPinned();
+  const isLastLeftPinnedColumn =
+    isPinned === "left" && column.getIsLastColumn("left");
+  const isFirstRightPinnedColumn =
+    isPinned === "right" && column.getIsFirstColumn("right");
+
+  return cn(
+    isLastLeftPinnedColumn && "border-r border-border",
+    isFirstRightPinnedColumn && "border-l border-border",
+  );
+};
 
 export function DataTable<TData extends object, TValue>({
   columns,
@@ -111,6 +164,7 @@ export function DataTable<TData extends object, TValue>({
   columnOrder,
   onColumnOrderChange,
   help,
+  noResultsMessage,
   orderBy,
   setOrderBy,
   rowHeight,
@@ -119,8 +173,12 @@ export function DataTable<TData extends object, TValue>({
   shouldRenderGroupHeaders = false,
   onRowClick,
   peekView,
-  pinFirstColumn = false,
   hidePagination = false,
+  tableName,
+  getRowClassName,
+  highlightAllRows = false,
+  topAlignCells = false,
+  cellPadding = "compact",
 }: DataTableProps<TData, TValue>) {
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const rowheighttw = getRowHeightTailwindClass(rowHeight, customRowHeights);
@@ -136,6 +194,19 @@ export function DataTable<TData extends object, TValue>({
     });
     return flatColumnsByGroup;
   }, [columns]);
+
+  const { columnSizing, setColumnSizing } = useColumnSizing(tableName);
+
+  // Infer column pinning state from column properties
+  const columnPinning = useMemo<ColumnPinningState>(
+    () => ({
+      left: columns
+        .filter((col) => col.isPinnedLeft)
+        .map((col) => col.id || col.accessorKey),
+      right: [],
+    }),
+    [columns],
+  );
 
   const table = useReactTable({
     data: data.data ?? [],
@@ -169,8 +240,11 @@ export function DataTable<TData extends object, TValue>({
       columnOrder: columnOrder
         ? insertArrayAfterKey(columnOrder, flattedColumnsByGroup)
         : undefined,
-      rowSelection,
+      rowSelection: rowSelection ?? {},
+      columnSizing,
+      columnPinning,
     },
+    onColumnSizingChange: setColumnSizing,
     manualFiltering: true,
     defaultColumn: {
       minSize: 20,
@@ -178,30 +252,25 @@ export function DataTable<TData extends object, TValue>({
       maxSize: Number.MAX_SAFE_INTEGER,
     },
     columnResizeMode: "onChange",
-  });
-
-  const getRowMemoized = useCallback(
-    (id: string) => table.getRow(id)?.original,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
-
-  const { inflatedPeekView, peekViewId, handleOnRowClickPeek } = usePeekView({
-    getRow: getRowMemoized,
-    peekView,
+    autoResetPageIndex: false,
   });
 
   const handleOnRowClick = useCallback(
-    (row: TData) => {
-      if (inflatedPeekView) {
-        handleOnRowClickPeek?.(row);
+    (row: TData, event?: React.MouseEvent) => {
+      // Call the table-specific onRowClick first (for modifier key handling)
+      onRowClick?.(row, event);
+
+      // If the table handler didn't prevent default, handle peek view
+      if (peekView && !event?.defaultPrevented) {
+        const rowId =
+          "id" in row && typeof row.id === "string" ? row.id : undefined;
+        peekView.openPeek?.(rowId, row);
       }
-      onRowClick?.(row);
     },
-    [handleOnRowClickPeek, onRowClick, inflatedPeekView],
+    [onRowClick, peekView],
   );
 
-  const hasRowClickAction = !!onRowClick || !!inflatedPeekView;
+  const hasRowClickAction = !!onRowClick || !!peekView?.openPeek;
 
   // memo column sizes for performance
   // https://tanstack.com/table/v8/docs/guide/column-sizing#advanced-column-resizing-performance
@@ -238,164 +307,168 @@ export function DataTable<TData extends object, TValue>({
         )}
       >
         <div
-          className={cn("relative w-full overflow-auto border-t")}
+          className={cn("relative min-h-full w-full overflow-auto border-t")}
           style={{ ...columnSizeVars }}
         >
-          <SelectedRowContext.Provider value={peekViewId}>
-            <Table>
-              <TableHeader className="sticky top-0 z-10">
-                {tableHeaders.map((headerGroup) => (
-                  <TableRow key={headerGroup.id}>
-                    {headerGroup.headers.map((header) => {
-                      const columnDef = header.column
-                        .columnDef as LangfuseColumnDef<ModelTableRow>;
-                      const sortingEnabled = columnDef.enableSorting;
-                      // if the header id does not translate to a valid css variable name, default to 150px as width
-                      // may only happen for dynamic columns, as column names are user defined
-                      const width = isValidCssVariableName({
-                        name: header.id,
-                        includesHyphens: false,
-                      })
-                        ? `calc(var(--header-${header.id}-size) * 1px)`
-                        : 150;
+          <Table>
+            <TableHeader className="sticky top-0 z-20">
+              {tableHeaders.map((headerGroup) => (
+                <TableRow key={headerGroup.id}>
+                  {headerGroup.headers.map((header) => {
+                    const columnDef = header.column
+                      .columnDef as LangfuseColumnDef<ModelTableRow>;
+                    const sortingEnabled = columnDef.enableSorting;
+                    // if the header id does not translate to a valid css variable name, default to 150px as width
+                    // may only happen for dynamic columns, as column names are user defined
+                    const width = isValidCssVariableName({
+                      name: header.id,
+                      includesHyphens: false,
+                    })
+                      ? `calc(var(--header-${header.id}-size) * 1px)`
+                      : 150;
 
-                      return header.column.getIsVisible() ? (
-                        <TableHead
-                          key={header.id}
-                          className={cn(
-                            "group p-1 first:pl-2",
-                            sortingEnabled && "cursor-pointer",
-                            pinFirstColumn &&
-                              header.index === 0 &&
-                              "sticky left-0 z-20 border-r bg-background",
-                          )}
-                          style={{ width }}
-                          onClick={(event) => {
-                            event.preventDefault();
+                    return header.column.getIsVisible() ? (
+                      <TableHead
+                        key={header.id}
+                        className={cn(
+                          "group p-1 first:pl-2",
+                          sortingEnabled && "cursor-pointer",
+                          getPinningClasses(header.column),
+                        )}
+                        style={{
+                          width,
+                          ...getCommonPinningStyles(header.column),
+                        }}
+                        onClick={(event) => {
+                          event.preventDefault();
 
-                            if (
-                              !setOrderBy ||
-                              !columnDef.id ||
-                              !sortingEnabled
-                            ) {
-                              return;
-                            }
+                          if (!setOrderBy || !columnDef.id || !sortingEnabled) {
+                            return;
+                          }
 
-                            if (orderBy?.column === columnDef.id) {
-                              if (orderBy.order === "DESC") {
-                                capture("table:column_sorting_header_click", {
-                                  column: columnDef.id,
-                                  order: "ASC",
-                                });
-                                setOrderBy({
-                                  column: columnDef.id,
-                                  order: "ASC",
-                                });
-                              } else {
-                                capture("table:column_sorting_header_click", {
-                                  column: columnDef.id,
-                                  order: "Disabled",
-                                });
-                                setOrderBy(null);
-                              }
-                            } else {
+                          if (orderBy?.column === columnDef.id) {
+                            if (orderBy.order === "DESC") {
                               capture("table:column_sorting_header_click", {
                                 column: columnDef.id,
-                                order: "DESC",
+                                order: "ASC",
                               });
                               setOrderBy({
                                 column: columnDef.id,
-                                order: "DESC",
+                                order: "ASC",
                               });
+                            } else {
+                              capture("table:column_sorting_header_click", {
+                                column: columnDef.id,
+                                order: "Disabled",
+                              });
+                              setOrderBy(null);
                             }
-                          }}
-                        >
-                          {header.isPlaceholder ? null : (
-                            <div className="flex select-none items-center">
-                              <span className="truncate">
-                                {flexRender(
-                                  header.column.columnDef.header,
-                                  header.getContext(),
-                                )}
-                              </span>
-                              {columnDef.headerTooltip && (
-                                <DocPopup
-                                  description={
-                                    columnDef.headerTooltip.description
-                                  }
-                                  href={columnDef.headerTooltip.href}
-                                />
+                          } else {
+                            capture("table:column_sorting_header_click", {
+                              column: columnDef.id,
+                              order: "DESC",
+                            });
+                            setOrderBy({
+                              column: columnDef.id,
+                              order: "DESC",
+                            });
+                          }
+                        }}
+                      >
+                        {header.isPlaceholder ? null : (
+                          <div className="flex items-center select-none">
+                            <span className="truncate">
+                              {flexRender(
+                                header.column.columnDef.header,
+                                header.getContext(),
                               )}
-                              {orderBy?.column === columnDef.id
-                                ? renderOrderingIndicator(orderBy)
-                                : null}
-
-                              <div
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                }}
-                                onDoubleClick={() => header.column.resetSize()}
-                                onMouseDown={header.getResizeHandler()}
-                                onTouchStart={header.getResizeHandler()}
-                                className={cn(
-                                  "absolute right-0 top-0 h-full w-1.5 cursor-col-resize touch-none select-none bg-secondary opacity-0 group-hover:opacity-100",
-                                  header.column.getIsResizing() &&
-                                    "bg-primary-accent opacity-100",
-                                )}
+                            </span>
+                            {columnDef.headerTooltip && (
+                              <DocPopup
+                                description={
+                                  columnDef.headerTooltip.description
+                                }
+                                href={columnDef.headerTooltip.href}
                               />
-                            </div>
-                          )}
-                        </TableHead>
-                      ) : null;
-                    })}
-                  </TableRow>
-                ))}
-              </TableHeader>
-              {table.getState().columnSizingInfo.isResizingColumn ||
-              !!peekView ? (
-                <MemoizedTableBody
-                  table={table}
-                  rowheighttw={rowheighttw}
-                  columns={columns}
-                  data={data}
-                  help={help}
-                  onRowClick={hasRowClickAction ? handleOnRowClick : undefined}
-                  pinFirstColumn={pinFirstColumn}
-                  tableSnapshot={{
-                    tableDataUpdatedAt: peekView?.tableDataUpdatedAt,
-                    columnVisibility,
-                    columnOrder,
-                    rowSelection,
-                  }}
-                />
-              ) : (
-                <TableBodyComponent
-                  table={table}
-                  rowheighttw={rowheighttw}
-                  columns={columns}
-                  data={data}
-                  help={help}
-                  onRowClick={hasRowClickAction ? handleOnRowClick : undefined}
-                  pinFirstColumn={pinFirstColumn}
-                />
-              )}
-            </Table>
-          </SelectedRowContext.Provider>
+                            )}
+                            {orderBy?.column === columnDef.id
+                              ? renderOrderingIndicator(orderBy)
+                              : null}
+
+                            <div
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                              }}
+                              onDoubleClick={() => header.column.resetSize()}
+                              onMouseDown={header.getResizeHandler()}
+                              onTouchStart={header.getResizeHandler()}
+                              className={cn(
+                                "bg-secondary absolute top-0 right-0 h-full w-1.5 cursor-col-resize touch-none opacity-0 select-none group-hover:opacity-100",
+                                header.column.getIsResizing() &&
+                                  "bg-primary-accent opacity-100",
+                              )}
+                            />
+                          </div>
+                        )}
+                      </TableHead>
+                    ) : null;
+                  })}
+                </TableRow>
+              ))}
+            </TableHeader>
+            {table.getState().columnSizingInfo.isResizingColumn ||
+            !!peekView ? (
+              <MemoizedTableBody
+                table={table}
+                rowheighttw={rowheighttw}
+                rowHeight={rowHeight}
+                columns={columns}
+                data={data}
+                help={help}
+                noResultsMessage={noResultsMessage}
+                onRowClick={hasRowClickAction ? handleOnRowClick : undefined}
+                getRowClassName={getRowClassName}
+                highlightAllRows={highlightAllRows}
+                topAlignCells={topAlignCells}
+                cellPadding={cellPadding}
+                tableSnapshot={{
+                  columnVisibility,
+                  columnOrder,
+                  rowSelection,
+                }}
+              />
+            ) : (
+              <TableBodyComponent
+                table={table}
+                rowheighttw={rowheighttw}
+                rowHeight={rowHeight}
+                columns={columns}
+                data={data}
+                help={help}
+                noResultsMessage={noResultsMessage}
+                onRowClick={hasRowClickAction ? handleOnRowClick : undefined}
+                getRowClassName={getRowClassName}
+                highlightAllRows={highlightAllRows}
+                topAlignCells={topAlignCells}
+                cellPadding={cellPadding}
+              />
+            )}
+          </Table>
         </div>
-        <div className="grow"></div>
       </div>
-      {inflatedPeekView && <TablePeekView {...inflatedPeekView} />}
       {!hidePagination && pagination !== undefined ? (
         <div
           className={cn(
-            "sticky bottom-0 z-10 flex w-full justify-end border-t bg-background py-2 pr-2 font-medium",
+            "bg-background sticky bottom-0 z-10 flex w-full justify-end border-t py-2 pr-2 font-medium",
           )}
         >
           <DataTablePagination
             table={table}
             isLoading={data.isLoading}
             paginationOptions={pagination.options}
+            hideTotalCount={pagination.hideTotalCount}
+            canJumpPages={pagination.canJumpPages}
           />
         </div>
       ) : null}
@@ -417,13 +490,18 @@ function renderOrderingIndicator(orderBy?: OrderByState) {
 interface TableBodyComponentProps<TData> {
   table: ReturnType<typeof useReactTable<TData>>;
   rowheighttw?: string;
+  rowHeight?: RowHeight;
   columns: LangfuseColumnDef<TData, any>[];
   data: AsyncTableData<TData[]>;
   help?: { description: string; href: string };
-  onRowClick?: (row: TData) => void;
-  pinFirstColumn?: boolean;
+  noResultsMessage?: React.ReactNode;
+  onRowClick?: (row: TData, event?: React.MouseEvent) => void;
+  getRowClassName?: (row: TData) => string;
+  highlightAllRows?: boolean;
+  topAlignCells?: boolean;
+  cellPadding?: "compact" | "comfortable";
+  /** Used for React.memo comparison only */
   tableSnapshot?: {
-    tableDataUpdatedAt?: number;
     columnVisibility?: VisibilityState;
     columnOrder?: ColumnOrderState;
     rowSelection?: RowSelectionState;
@@ -433,26 +511,41 @@ interface TableBodyComponentProps<TData> {
 function TableRowComponent<TData>({
   row,
   onRowClick,
+  getRowClassName,
+  highlightAllRows = false,
   children,
 }: {
   row: Row<TData>;
-  onRowClick?: (row: TData) => void;
+  onRowClick?: (row: TData, event?: React.MouseEvent) => void;
+  getRowClassName?: (row: TData) => string;
+  highlightAllRows?: boolean;
   children: React.ReactNode;
 }) {
-  const peekViewId = useContext(SelectedRowContext);
+  const router = useRouter();
+  const selectedRowId = router.query.peek as string | undefined;
+
   return (
     <TableRow
       data-row-index={row.index}
-      onClick={() => onRowClick?.(row.original)}
+      onClick={(e) => {
+        if (shouldIgnoreRowClickTarget(e.target)) return;
+        onRowClick?.(row.original, e);
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
+          if (shouldIgnoreRowClickTarget(e.target)) return;
           onRowClick?.(row.original);
         }
       }}
       className={cn(
         "hover:bg-accent",
         !!onRowClick ? "cursor-pointer" : "cursor-default",
-        peekViewId && peekViewId === row.id ? "bg-accent" : undefined,
+        (row.getIsSelected() || highlightAllRows) &&
+          "bg-muted/40 dark:bg-muted",
+        selectedRowId && selectedRowId === row.id
+          ? "bg-muted/40 dark:bg-muted"
+          : undefined,
+        getRowClassName?.(row.original),
       )}
     >
       {children}
@@ -463,54 +556,155 @@ function TableRowComponent<TData>({
 function TableBodyComponent<TData>({
   table,
   rowheighttw,
+  rowHeight,
   columns,
   data,
   help,
+  noResultsMessage,
   onRowClick,
-  pinFirstColumn = false,
+  getRowClassName,
+  highlightAllRows,
+  topAlignCells = false,
+  cellPadding = "compact",
+  tableSnapshot: _tableSnapshot,
 }: TableBodyComponentProps<TData>) {
+  const visibleColumns = table.getVisibleLeafColumns();
+  const skeletonRowCount = Math.max(
+    1,
+    Math.min(table.getState().pagination?.pageSize ?? 8, 8),
+  );
+
   return (
     <TableBody>
       {data.isLoading || !data.data ? (
-        <TableRow className="h-svh">
-          <TableCell
-            colSpan={columns.length}
-            className="content-start border-b text-center"
-          >
-            Loading...
-          </TableCell>
-        </TableRow>
-      ) : table.getRowModel().rows.length ? (
-        table.getRowModel().rows.map((row) => (
-          <TableRowComponent key={row.id} row={row} onRowClick={onRowClick}>
-            {row.getVisibleCells().map((cell) => (
+        Array.from({ length: skeletonRowCount }).map((_, rowIndex) => (
+          <TableRow key={`loading-row-${rowIndex}`} aria-hidden="true">
+            {visibleColumns.map((column, columnIndex) => (
               <TableCell
-                key={cell.id}
+                key={`${column.id}-loading-cell-${rowIndex}`}
                 className={cn(
-                  "overflow-hidden border-b p-1 text-xs first:pl-2",
-                  rowheighttw === "s" && "whitespace-nowrap",
-                  pinFirstColumn &&
-                    cell.column.getIndex() === 0 &&
-                    "sticky left-0 border-r bg-background",
+                  "overflow-hidden border-b text-xs first:pl-2",
+                  cellPadding === "comfortable" ? "p-1" : "px-1",
+                  (rowHeight ?? "s") === "s" && "whitespace-nowrap",
+                  getPinningClasses(column),
                 )}
                 style={{
-                  width: `calc(var(--col-${cell.column.id}-size) * 1px)`,
+                  width: `calc(var(--col-${column.id}-size) * 1px)`,
+                  ...getCommonPinningStyles(column),
                 }}
               >
-                <div className={cn("flex items-center", rowheighttw)}>
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                <div
+                  className={cn(
+                    "flex",
+                    (rowHeight ?? "s") === "s" && !topAlignCells
+                      ? "items-center"
+                      : "items-start",
+                    (rowHeight ?? "s") !== "s" && "py-1",
+                    rowheighttw,
+                  )}
+                >
+                  {(() => {
+                    const columnDef =
+                      column.columnDef as LangfuseColumnDef<TData>;
+                    const loadingCell = columnDef.loadingCell;
+
+                    if (typeof loadingCell === "function") {
+                      return loadingCell();
+                    }
+
+                    if (loadingCell !== undefined) {
+                      return loadingCell;
+                    }
+
+                    return (
+                      <TableTextLoadingCell
+                        className={cn(
+                          "min-w-[3rem]",
+                          (rowIndex + columnIndex) % 4 === 0 && "w-3/4",
+                          (rowIndex + columnIndex) % 4 === 1 && "w-1/2",
+                          (rowIndex + columnIndex) % 4 === 2 && "w-2/3",
+                          (rowIndex + columnIndex) % 4 === 3 && "w-5/6",
+                        )}
+                      />
+                    );
+                  })()}
                 </div>
               </TableCell>
             ))}
+          </TableRow>
+        ))
+      ) : table.getRowModel().rows.length ? (
+        table.getRowModel().rows.map((row) => (
+          <TableRowComponent
+            key={row.id}
+            row={row}
+            onRowClick={onRowClick}
+            getRowClassName={getRowClassName}
+            highlightAllRows={highlightAllRows}
+          >
+            {row.getVisibleCells().map((cell) => {
+              const cellValue = cell.getValue();
+              const isStringCell = typeof cellValue === "string";
+              const isSmallRowHeight = (rowHeight ?? "s") === "s";
+
+              return (
+                <TableCell
+                  key={cell.id}
+                  className={cn(
+                    "overflow-hidden border-b text-xs first:pl-2",
+                    cellPadding === "comfortable" ? "p-1" : "px-1",
+                    isSmallRowHeight && "whitespace-nowrap",
+                    getPinningClasses(cell.column),
+                  )}
+                  style={{
+                    width: `calc(var(--col-${cell.column.id}-size) * 1px)`,
+                    ...getCommonPinningStyles(cell.column),
+                  }}
+                >
+                  <div
+                    className={cn(
+                      "flex",
+                      isSmallRowHeight && !topAlignCells
+                        ? "items-center"
+                        : "items-start",
+                      !isSmallRowHeight && "py-1",
+                      rowheighttw,
+                    )}
+                  >
+                    {isStringCell && isSmallRowHeight ? (
+                      <div className="min-w-0 truncate leading-none">
+                        {flexRender(
+                          cell.column.columnDef.cell,
+                          cell.getContext(),
+                        )}
+                      </div>
+                    ) : isStringCell && !isSmallRowHeight ? (
+                      <div className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden text-ellipsis">
+                        {flexRender(
+                          cell.column.columnDef.cell,
+                          cell.getContext(),
+                        )}
+                      </div>
+                    ) : (
+                      flexRender(cell.column.columnDef.cell, cell.getContext())
+                    )}
+                  </div>
+                </TableCell>
+              );
+            })}
           </TableRowComponent>
         ))
       ) : (
         <TableRow className="hover:bg-transparent">
           <TableCell colSpan={columns.length} className="h-24">
-            <div className="pointer-events-none absolute left-[50%] flex -translate-y-1/2 items-center justify-center">
-              No results.{" "}
-              {help && (
-                <DocPopup description={help.description} href={help.href} />
+            <div className="pointer-events-none absolute left-[50%] flex -translate-x-1/2 -translate-y-1/2 items-center justify-center text-center">
+              {noResultsMessage ?? (
+                <>
+                  No results.{" "}
+                  {help && (
+                    <DocPopup description={help.description} href={help.href} />
+                  )}
+                </>
               )}
             </div>
           </TableCell>
@@ -540,15 +734,18 @@ const MemoizedTableBody = React.memo(TableBodyComponent, (prev, next) => {
   if (!prev.tableSnapshot || !next.tableSnapshot)
     return !prev.tableSnapshot && !next.tableSnapshot;
 
-  // Check reference equality first (faster)
-  if (
-    prev.tableSnapshot.tableDataUpdatedAt !==
-    next.tableSnapshot.tableDataUpdatedAt
-  )
-    return false;
-  if (prev.table.options.data !== next.table.options.data) return false;
+  // Compare actual data arrays from the AsyncTableData prop.
+  // prev.table.options.data won't work — TanStack Table returns a stable mutable instance.
+  const prevDataArr =
+    !prev.data.isLoading && !prev.data.isError ? prev.data.data : undefined;
+  const nextDataArr =
+    !next.data.isLoading && !next.data.isError ? next.data.data : undefined;
+  if (prevDataArr !== nextDataArr) return false;
   if (prev.data.isLoading !== next.data.isLoading) return false;
   if (prev.rowheighttw !== next.rowheighttw) return false;
+  if (prev.rowHeight !== next.rowHeight) return false;
+  if (prev.highlightAllRows !== next.highlightAllRows) return false;
+  if (prev.cellPadding !== next.cellPadding) return false;
 
   // Then do more expensive deep equality checks
   if (

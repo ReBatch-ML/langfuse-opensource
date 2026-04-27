@@ -1,5 +1,4 @@
-import { usePeekState } from "@/src/components/table/peek/hooks/usePeekState";
-import { type EvaluatorDataRow } from "@/src/features/evals/components/evaluator-table";
+import { useRouter } from "next/router";
 import { Skeleton } from "@/src/components/ui/skeleton";
 import TableLink from "@/src/components/table/table-link";
 import { CardDescription } from "@/src/components/ui/card";
@@ -14,69 +13,124 @@ import { LangfuseIcon } from "@/src/components/LangfuseLogo";
 import { UserCircle2Icon } from "lucide-react";
 import { StatusBadge } from "@/src/components/layouts/status-badge";
 import { DeactivateEvalConfig } from "@/src/features/evals/components/deactivate-config";
+import { Switch } from "@/src/components/ui/switch";
+import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
+import { useState } from "react";
+import { cn } from "@/src/utils/tailwind";
+import { showSuccessToast } from "@/src/features/notifications/showSuccessToast";
+import { api } from "@/src/utils/api";
+import { LegacyEvalCallout } from "@/src/features/evals/components/legacy-eval-callout";
+import { EvaluatorPausedCallout } from "@/src/features/evals/components/evaluator-paused-callout";
+import { isLegacyEvalTarget } from "@/src/features/evals/utils/typeHelpers";
+import { useLazyEvaluatorExecutionCounts } from "@/src/features/evals/hooks/useLazyEvaluatorExecutionCounts";
 
 export const PeekViewEvaluatorConfigDetail = ({
   projectId,
-  row,
 }: {
   projectId: string;
-  row?: EvaluatorDataRow;
 }) => {
-  const { peekId } = usePeekState("evals");
+  const router = useRouter();
+  const peekId = router.query.peek as string | undefined;
+  const [isEditMode, setIsEditMode] = useState(false);
+  const utils = api.useUtils();
 
   const { data: evalConfig } = usePeekEvalConfigData({
     jobConfigurationId: peekId,
     projectId,
   });
+  const lazyExecutionCounts = useLazyEvaluatorExecutionCounts({
+    projectId,
+    evaluatorId: evalConfig?.id,
+    evaluator: evalConfig,
+  });
+
+  const hasAccess = useHasProjectAccess({ projectId, scope: "evalJob:CUD" });
 
   if (!evalConfig) {
-    return <Skeleton className="h-full w-full" />;
+    return <Skeleton className="h-full w-full rounded-none" />;
   }
 
+  const displayStatus =
+    lazyExecutionCounts.displayStatus ?? evalConfig.displayStatus;
+
   return (
-    <div className="grid h-full flex-1 grid-rows-[auto,auto,1fr] gap-2 overflow-hidden p-3 contain-layout">
+    <div className="grid h-full flex-1 grid-rows-[auto_auto_1fr] gap-2 overflow-hidden p-3 contain-layout">
       <div className="flex items-center justify-between">
-        <span className="max-h-fit text-lg font-medium">Configuration</span>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-row items-center gap-2">
+          <span className="max-h-fit text-lg font-medium">Configuration</span>
           <div className="flex items-center gap-2">
             <StatusBadge
-              type={evalConfig.status.toLowerCase()}
+              type={displayStatus.toLowerCase()}
               isLive
               className="max-h-8"
             />
-            <DeactivateEvalConfig
-              projectId={projectId}
-              evalConfig={evalConfig}
-            />
+            {isLegacyEvalTarget(evalConfig.targetObject) && (
+              <DeactivateEvalConfig
+                projectId={projectId}
+                evalConfig={evalConfig}
+              />
+            )}
           </div>
-          <span className="text-sm text-muted-foreground">View Only</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className={cn("text-sm", isEditMode ? "" : "text-muted-foreground")}
+          >
+            Edit Mode
+          </span>
+          <Switch
+            disabled={
+              !hasAccess ||
+              (isLegacyEvalTarget(evalConfig.targetObject) &&
+                evalConfig?.timeScope?.length === 1 &&
+                evalConfig.timeScope[0] === "EXISTING")
+            }
+            checked={isEditMode}
+            onCheckedChange={setIsEditMode}
+          />
         </div>
       </div>
+
+      {evalConfig &&
+        evalConfig.targetObject &&
+        evalConfig.evalTemplate &&
+        displayStatus === "ACTIVE" && (
+          <LegacyEvalCallout
+            projectId={projectId}
+            evalConfigId={evalConfig.id}
+            targetObject={evalConfig.targetObject}
+          />
+        )}
+
+      <EvaluatorPausedCallout projectId={projectId} evalConfig={evalConfig} />
+
       <CardDescription className="flex items-center text-sm">
         <span className="mr-2 text-sm font-medium">Referenced Evaluator</span>
-        {row?.template && (
+        {evalConfig.evalTemplate && (
           <TableLink
-            path={`/project/${projectId}/evals/templates/${row?.template.id}`}
-            value={row?.template.name}
+            path={`/project/${projectId}/evals/templates/${evalConfig.evalTemplate.id}`}
+            value={evalConfig.evalTemplate.name}
             className="mr-1 flex min-h-6 items-center"
           />
         )}
-        {row?.maintainer && (
+        {evalConfig.evalTemplate && (
           <Tooltip>
             <TooltipTrigger>
-              {row.maintainer.includes("Langfuse") ? (
+              {evalConfig.evalTemplate.projectId === null ? (
                 <LangfuseIcon size={16} />
               ) : (
                 <UserCircle2Icon className="h-4 w-4" />
               )}
             </TooltipTrigger>
-            <TooltipContent>{row.maintainer}</TooltipContent>
+            <TooltipContent>
+              {evalConfig.evalTemplate.partner ?? "Langfuse"}
+            </TooltipContent>
           </Tooltip>
         )}
       </CardDescription>
       <div className="flex max-h-full w-full flex-col items-start justify-between space-y-2 overflow-y-auto pb-4">
         <EvaluatorForm
-          key={evalConfig?.id}
+          key={`${evalConfig?.id}-${evalConfig?.updatedAt}-${isEditMode}`}
           projectId={projectId}
           evalTemplates={
             evalConfig?.evalTemplate ? [evalConfig.evalTemplate] : []
@@ -89,8 +143,18 @@ export const PeekViewEvaluatorConfigDetail = ({
                 }
               : undefined
           }
-          disabled={true}
+          mode="edit"
+          disabled={!isEditMode}
           shouldWrapVariables={true}
+          useDialog={false}
+          onFormSuccess={() => {
+            setIsEditMode(false);
+            utils.evals.invalidate();
+            showSuccessToast({
+              title: "Running Evaluator updated",
+              description: "The evaluator configuration has been updated.",
+            });
+          }}
         />
       </div>
     </div>

@@ -3,34 +3,52 @@ import { removeLabelsFromPreviousPromptVersions } from "@/src/features/prompts/s
 import { InvalidRequestError, LangfuseNotFoundError } from "@langfuse/shared";
 import { prisma, Prisma } from "@langfuse/shared/src/db";
 import { redis } from "@langfuse/shared/src/server";
+import { promptChangeEventSourcing } from "@/src/features/prompts/server/promptChangeEventSourcing";
 
 export type UpdatePromptParams = {
   promptName: string;
   projectId: string;
   promptVersion: number;
   newLabels: string[];
+  user?: { id: string; name: string | null; email: string | null };
 };
 
 export const updatePrompt = async (params: UpdatePromptParams) => {
-  const { promptName, projectId, promptVersion, newLabels } = params;
+  const { promptName, projectId, promptVersion, newLabels, user } = params;
 
   logger.info(
     `Updating prompt ${promptName} in project ${projectId} version ${promptVersion} with labels ${newLabels}`,
   );
   const promptService = new PromptService(prisma, redis);
-  try {
-    await promptService.lockCache({ projectId, promptName: promptName });
+  const touchedPromptIds: string[] = [];
 
-    const prompt = await promptService.getPrompt({
-      projectId,
-      promptName,
-      version: promptVersion,
-      label: undefined,
-    });
+  const result = await prisma.$transaction(async (tx) => {
+    const prompt = (
+      await tx.$queryRaw<
+        Array<{
+          id: string;
+          name: string;
+          version: number;
+          labels: string[];
+        }>
+      >`
+        SELECT
+          *
+        FROM
+          prompts
+        WHERE
+          project_id = ${projectId}
+          AND name = ${promptName}
+          AND version = ${promptVersion} 
+        FOR UPDATE -- Important! This will lock the row for concurrent updates
+      `
+    )[0];
 
     if (!prompt) {
       throw new LangfuseNotFoundError(`Prompt not found: ${promptName}`);
     }
+
+    touchedPromptIds.push(prompt.id);
 
     const newLabelsSet = new Set([...newLabels, ...prompt.labels]);
     const removedLabels = [];
@@ -44,7 +62,7 @@ export const updatePrompt = async (params: UpdatePromptParams) => {
     }
 
     if (removedLabels.length > 0) {
-      const dependents = await prisma.$queryRaw<
+      const dependents = await tx.$queryRaw<
         {
           parent_name: string;
           parent_version: number;
@@ -52,20 +70,20 @@ export const updatePrompt = async (params: UpdatePromptParams) => {
           child_label: string;
         }[]
       >`
-      SELECT
-        p."name" AS "parent_name",
-        p."version" AS "parent_version",
-        pd."child_version" AS "child_version",
-        pd."child_label" AS "child_label"
-      FROM
-        prompt_dependencies pd
-        INNER JOIN prompts p ON p.id = pd.parent_id
-      WHERE
-        p.project_id = ${projectId}
-        AND pd.project_id = ${projectId}
-        AND pd.child_name = ${promptName}
-        AND pd."child_label" IS NOT NULL AND pd."child_label" IN (${Prisma.join(removedLabels)})
-      `;
+          SELECT
+            p."name" AS "parent_name",
+            p."version" AS "parent_version",
+            pd."child_version" AS "child_version",
+            pd."child_label" AS "child_label"
+          FROM
+            prompt_dependencies pd
+            INNER JOIN prompts p ON p.id = pd.parent_id
+          WHERE
+            p.project_id = ${projectId}
+            AND pd.project_id = ${projectId}
+            AND pd.child_name = ${promptName}
+            AND pd."child_label" IS NOT NULL AND pd."child_label" IN (${Prisma.join(removedLabels)})
+        `;
 
       if (dependents.length > 0) {
         const dependencyMessages = dependents
@@ -87,14 +105,21 @@ export const updatePrompt = async (params: UpdatePromptParams) => {
       )}`,
     );
 
-    const tx = [
-      ...(await removeLabelsFromPreviousPromptVersions({
-        prisma,
+    const { touchedPromptIds: labelsTouchedPromptIds, updates: labelUpdates } =
+      await removeLabelsFromPreviousPromptVersions({
+        prisma: tx,
         projectId,
         promptName,
         labelsToRemove: [...new Set(newLabels)],
-      })),
-      prisma.prompt.update({
+      });
+
+    touchedPromptIds.push(...labelsTouchedPromptIds);
+
+    const result = await Promise.all([
+      // Remove labels from other prompts
+      ...labelUpdates,
+      // Update prompt
+      tx.prompt.update({
         where: {
           id: prompt.id,
           projectId,
@@ -105,17 +130,37 @@ export const updatePrompt = async (params: UpdatePromptParams) => {
           },
         },
       }),
-    ];
+    ]);
 
-    await promptService.invalidateCache({ projectId, promptName: promptName });
+    return result[result.length - 1];
+  });
 
-    const res = await prisma.$transaction(tx);
+  await promptService.invalidateCache({ projectId });
 
-    await promptService.unlockCache({ projectId, promptName: promptName });
+  // For updates, we need the before state, but we don't have it easily accessible here
+  // This updatePrompt function only handles label updates, so the main content doesn't change
+  // We'll pass undefined for now since label changes don't need before state for webhooks
 
-    return res[res.length - 1];
-  } catch (e) {
-    await promptService.unlockCache({ projectId, promptName: promptName });
-    throw e;
-  }
+  const updatedPrompts = await prisma.prompt.findMany({
+    where: {
+      id: { in: touchedPromptIds },
+      projectId,
+    },
+  });
+
+  logger.info(
+    `Triggering webhook for ${updatedPrompts.length} prompts of project ${projectId}, touchedPromptIds: ${JSON.stringify(touchedPromptIds)}`,
+  );
+
+  await Promise.all(
+    updatedPrompts.map(async (prompt) =>
+      promptChangeEventSourcing(
+        await promptService.resolvePrompt(prompt),
+        "updated",
+        user,
+      ),
+    ),
+  );
+
+  return result;
 };

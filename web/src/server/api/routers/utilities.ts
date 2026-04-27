@@ -1,4 +1,7 @@
-import { createTRPCRouter, protectedProcedure } from "@/src/server/api/trpc";
+import {
+  createTRPCRouter,
+  authenticatedProcedure,
+} from "@/src/server/api/trpc";
 import { z } from "zod";
 import { promises as dns } from "dns";
 import { Address4, Address6 } from "ip-address";
@@ -76,10 +79,11 @@ const isValidAndSecureUrl = async (urlString: string): Promise<boolean> => {
 
     // Consider unresolvable or private hostnames as invalid/unsafe
     return (
-      (Boolean(ipAddresses.addresses4.length) &&
-        ipAddresses.addresses4.every((ip) => !isPrivateIp(ip))) ||
-      (Boolean(ipAddresses.addresses6.length) &&
-        ipAddresses.addresses6.every((ip) => !isPrivateIp(ip)))
+      (ipAddresses.addresses4.length === 0 ||
+        ipAddresses.addresses4.every((ip) => !isPrivateIp(ip))) &&
+      (ipAddresses.addresses6.length === 0 ||
+        ipAddresses.addresses6.every((ip) => !isPrivateIp(ip))) &&
+      (ipAddresses.addresses4.length > 0 || ipAddresses.addresses6.length > 0)
     );
   } catch (error) {
     logger.info("Invalid URL:", error);
@@ -196,7 +200,7 @@ const isValidImageUrl = async (url: string): Promise<boolean> => {
 };
 
 export const utilsRouter = createTRPCRouter({
-  validateImgUrl: protectedProcedure
+  validateImgUrl: authenticatedProcedure
     .input(z.string().max(2048))
     .query(async ({ input: url }) => {
       const isValidUrl = await isValidAndSecureUrl(url);

@@ -8,6 +8,10 @@ import {
   OrgEnrichedApiKey,
   logger,
   instrumentAsync,
+  addUserToSpan,
+  invalidateCachedApiKeys as invalidateCachedApiKeysShared,
+  invalidateCachedOrgApiKeys as invalidateCachedOrgApiKeysShared,
+  invalidateCachedProjectApiKeys as invalidateCachedProjectApiKeysShared,
 } from "@langfuse/shared/src/server";
 import {
   type PrismaClient,
@@ -16,7 +20,7 @@ import {
   type ApiKeyScope,
 } from "@langfuse/shared/src/db";
 import { isPrismaException } from "@/src/utils/exceptions";
-import { type Redis } from "ioredis";
+import { type Redis, type Cluster } from "ioredis";
 import { getOrganizationPlanServerSide } from "@/src/features/entitlements/server/getPlan";
 import { API_KEY_NON_EXISTENT } from "@langfuse/shared/src/server";
 import { type z } from "zod";
@@ -24,9 +28,9 @@ import { CloudConfigSchema, isPlan } from "@langfuse/shared";
 
 export class ApiAuthService {
   prisma: PrismaClient;
-  redis: Redis | null;
+  redis: Redis | Cluster | null;
 
-  constructor(prisma: PrismaClient, redis: Redis | null) {
+  constructor(prisma: PrismaClient, redis: Redis | Cluster | null) {
     this.prisma = prisma;
     this.redis = redis;
   }
@@ -34,51 +38,16 @@ export class ApiAuthService {
   // this function needs to be called, when the organisation is updated
   // - when projects move across organisations, the orgId in the API key cache needs to be updated
   // - when the plan of the org changes, the plan in the API key cache needs to be updated as well
-  async invalidate(apiKeys: ApiKey[], identifier: string) {
-    const hashKeys = apiKeys.map((key) => key.fastHashedSecretKey);
-
-    const filteredHashKeys = hashKeys.filter((hash): hash is string =>
-      Boolean(hash),
-    );
-    if (filteredHashKeys.length === 0) {
-      logger.info("No valid keys to invalidate");
-      return;
-    }
-
-    if (this.redis) {
-      logger.info(`Invalidating API keys in redis for ${identifier}`);
-      await this.redis.del(
-        filteredHashKeys.map((hash) => this.createRedisKey(hash)),
-      );
-    }
+  async invalidateCachedApiKeys(apiKeys: ApiKey[], identifier: string) {
+    await invalidateCachedApiKeysShared(apiKeys, identifier, this.redis);
   }
 
-  async invalidateOrgApiKeys(orgId: string) {
-    const apiKeys = await this.prisma.apiKey.findMany({
-      where: {
-        OR: [
-          {
-            project: {
-              orgId: orgId,
-            },
-          },
-          { orgId },
-        ],
-      },
-    });
-
-    await this.invalidate(apiKeys, `org ${orgId}`);
+  async invalidateCachedOrgApiKeys(orgId: string) {
+    await invalidateCachedOrgApiKeysShared(orgId, this.redis);
   }
 
-  async invalidateProjectApiKeys(projectId: string) {
-    const apiKeys = await this.prisma.apiKey.findMany({
-      where: {
-        projectId: projectId,
-        scope: "PROJECT",
-      },
-    });
-
-    await this.invalidate(apiKeys, `project ${projectId}`);
+  async invalidateCachedProjectApiKeys(projectId: string) {
+    await invalidateCachedProjectApiKeysShared(projectId, this.redis);
   }
 
   /**
@@ -104,7 +73,7 @@ export class ApiAuthService {
 
     // if redis is available, delete the key from there as well
     // delete from redis even if caching is disabled via env for consistency
-    this.invalidate([apiKey], `key ${id}`);
+    await this.invalidateCachedApiKeys([apiKey], `key ${id}`);
 
     await this.prisma.apiKey.delete({
       where: {
@@ -121,7 +90,7 @@ export class ApiAuthService {
       { name: "api-auth-verify" },
       async () => {
         if (!authHeader) {
-          logger.error("No authorization header");
+          logger.debug("No authorization header");
           return {
             validKey: false,
             error: "No authorization header",
@@ -203,6 +172,12 @@ export class ApiAuthService {
               throw new Error("Invalid credentials");
             }
 
+            addUserToSpan({
+              projectId: finalApiKey.projectId ?? undefined,
+              orgId: finalApiKey.orgId,
+              plan,
+            });
+
             const accessLevel =
               finalApiKey.scope === "ORGANIZATION" ? "organization" : "project";
 
@@ -217,6 +192,7 @@ export class ApiAuthService {
                 apiKeyId: finalApiKey.id,
                 scope: finalApiKey.scope,
                 publicKey,
+                isIngestionSuspended: finalApiKey.isIngestionSuspended,
               },
             };
           }
@@ -232,8 +208,14 @@ export class ApiAuthService {
               );
             }
 
-            const { orgId, cloudConfig } =
+            const { orgId, cloudConfig, cloudFreeTierUsageThresholdState } =
               this.extractOrgIdAndCloudConfig(dbKey);
+
+            addUserToSpan({
+              projectId: dbKey.projectId ?? undefined,
+              orgId,
+              plan: getOrganizationPlanServerSide(cloudConfig),
+            });
 
             return {
               validKey: true,
@@ -246,11 +228,13 @@ export class ApiAuthService {
                 apiKeyId: dbKey.id,
                 scope: dbKey.scope,
                 publicKey,
+                isIngestionSuspended:
+                  cloudFreeTierUsageThresholdState === "BLOCKED",
               },
             };
           }
         } catch (error: unknown) {
-          logger.error(
+          logger.info(
             `Error verifying auth header: ${error instanceof Error ? error.message : null}`,
             error,
           );
@@ -272,6 +256,7 @@ export class ApiAuthService {
         };
       },
     );
+
     return result;
   }
 
@@ -331,10 +316,10 @@ export class ApiAuthService {
     // add the key to redis for future use if available, this does not throw
     // only do so if the new hashkey exists already.
     if (apiKeyAndOrganisation && apiKeyAndOrganisation.fastHashedSecretKey) {
-      await this.addApiKeyToRedis(
-        hash,
-        this.convertToRedisRepresentation(apiKeyAndOrganisation),
+      const cachedApiKey = this.convertToRedisRepresentation(
+        apiKeyAndOrganisation,
       );
+      await this.addApiKeyToRedis(hash, cachedApiKey);
     }
     return apiKeyAndOrganisation
       ? this.convertToRedisRepresentation(apiKeyAndOrganisation)
@@ -411,6 +396,7 @@ export class ApiAuthService {
           createdAt: Date;
           updatedAt: Date;
           cloudConfig: Prisma.JsonValue;
+          cloudFreeTierUsageThresholdState: string | null;
         };
       } | null;
     } & {
@@ -420,6 +406,7 @@ export class ApiAuthService {
         createdAt: Date;
         updatedAt: Date;
         cloudConfig: Prisma.JsonValue;
+        cloudFreeTierUsageThresholdState: string | null;
       } | null;
     },
   ) {
@@ -429,6 +416,10 @@ export class ApiAuthService {
     const rawCloudConfig =
       apiKeyAndOrganisation.project?.organization.cloudConfig ??
       apiKeyAndOrganisation.organization?.cloudConfig;
+    const cloudFreeTierUsageThresholdState =
+      apiKeyAndOrganisation.project?.organization
+        .cloudFreeTierUsageThresholdState ??
+      apiKeyAndOrganisation.organization?.cloudFreeTierUsageThresholdState;
 
     if (!orgId) {
       logger.error(
@@ -444,6 +435,7 @@ export class ApiAuthService {
     return {
       orgId,
       cloudConfig,
+      cloudFreeTierUsageThresholdState,
     };
   }
 
@@ -463,6 +455,7 @@ export class ApiAuthService {
           createdAt: Date;
           updatedAt: Date;
           cloudConfig: Prisma.JsonValue;
+          cloudFreeTierUsageThresholdState: string | null;
         };
       } | null;
     } & {
@@ -472,12 +465,12 @@ export class ApiAuthService {
         createdAt: Date;
         updatedAt: Date;
         cloudConfig: Prisma.JsonValue;
+        cloudFreeTierUsageThresholdState: string | null;
       } | null;
     },
   ) {
-    const { orgId, cloudConfig } = this.extractOrgIdAndCloudConfig(
-      apiKeyAndOrganisation,
-    );
+    const { orgId, cloudConfig, cloudFreeTierUsageThresholdState } =
+      this.extractOrgIdAndCloudConfig(apiKeyAndOrganisation);
 
     const newApiKey = OrgEnrichedApiKey.parse({
       ...apiKeyAndOrganisation,
@@ -485,6 +478,7 @@ export class ApiAuthService {
       orgId,
       plan: getOrganizationPlanServerSide(cloudConfig),
       rateLimitOverrides: cloudConfig?.rateLimitOverrides,
+      isIngestionSuspended: cloudFreeTierUsageThresholdState === "BLOCKED",
     });
 
     if (!orgId) {

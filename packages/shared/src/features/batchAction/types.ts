@@ -2,24 +2,39 @@ import z from "zod";
 import { singleFilter } from "../../interfaces/filters";
 import { orderBy } from "../../interfaces/orderBy";
 import { BatchTableNames } from "../../interfaces/tableNames";
+import { TracingSearchType } from "../../interfaces/search";
 
-/* eslint-disable no-unused-vars */
 export enum BatchActionType {
   Create = "create",
   Delete = "delete",
 }
 
-const ActionIdSchema = z.enum([
-  "score-delete",
-  "trace-delete",
-  "trace-add-to-annotation-queue",
-]);
+export enum BatchActionStatus {
+  Queued = "QUEUED",
+  Processing = "PROCESSING",
+  Completed = "COMPLETED",
+  Failed = "FAILED",
+  Partial = "PARTIAL",
+}
 
-export type ActionId = z.infer<typeof ActionIdSchema>;
+export enum ActionId {
+  ScoreDelete = "score-delete",
+  TraceDelete = "trace-delete",
+  TraceAddToAnnotationQueue = "trace-add-to-annotation-queue",
+  SessionAddToAnnotationQueue = "session-add-to-annotation-queue",
+  ObservationAddToAnnotationQueue = "observation-add-to-annotation-queue",
+  ObservationAddToDataset = "observation-add-to-dataset",
+  ObservationBatchEvaluation = "observation-run-batched-evaluation",
+  ExperimentCompare = "experiment-compare",
+}
+
+const ActionIdSchema = z.nativeEnum(ActionId);
 
 export const BatchActionQuerySchema = z.object({
   filter: z.array(singleFilter).nullable(),
   orderBy,
+  searchQuery: z.string().optional(),
+  searchType: z.array(TracingSearchType).optional(),
 });
 
 export type BatchActionQuery = z.infer<typeof BatchActionQuerySchema>;
@@ -29,11 +44,11 @@ export const CreateBatchActionSchema = z.object({
   actionId: ActionIdSchema,
   targetId: z.string().optional(),
   query: BatchActionQuerySchema,
-  tableName: z.nativeEnum(BatchTableNames),
+  tableName: z.enum(BatchTableNames),
 });
 
 export const GetIsBatchActionInProgressSchema = z.object({
   projectId: z.string(),
   actionId: ActionIdSchema,
-  tableName: z.nativeEnum(BatchTableNames),
+  tableName: z.enum(BatchTableNames),
 });

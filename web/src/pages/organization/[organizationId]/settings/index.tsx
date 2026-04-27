@@ -15,6 +15,10 @@ import { SSOSettings } from "@/src/ee/features/sso-settings/components/SSOSettin
 import { isCloudPlan } from "@langfuse/shared";
 import { useQueryProjectOrOrganization } from "@/src/features/projects/hooks";
 import { ApiKeyList } from "@/src/features/public-api/components/ApiKeyList";
+import AIFeatureSwitch from "@/src/features/organizations/components/AIFeatureSwitch";
+import { useIsCloudBillingAvailable } from "@/src/ee/features/billing/utils/isCloudBilling";
+import { env } from "@/src/env.mjs";
+import { OrgAuditLogsSettingsPage } from "@/src/ee/features/audit-log-viewer/OrgAuditLogsSettingsPage";
 
 type OrganizationSettingsPage = {
   title: string;
@@ -27,15 +31,18 @@ export function useOrganizationSettingsPages(): OrganizationSettingsPage[] {
   const { organization } = useQueryProjectOrOrganization();
   const showBillingSettings = useHasEntitlement("cloud-billing");
   const showOrgApiKeySettings = useHasEntitlement("admin-api");
+  const showAuditLogs = useHasEntitlement("audit-logs");
   const plan = usePlan();
   const isLangfuseCloud = isCloudPlan(plan) ?? false;
+  const isCloudBillingAvailable = useIsCloudBillingAvailable();
 
   if (!organization) return [];
 
   return getOrganizationSettingsPages({
     organization,
-    showBillingSettings,
+    showBillingSettings: showBillingSettings && isCloudBillingAvailable,
     showOrgApiKeySettings,
+    showAuditLogs,
     isLangfuseCloud,
   });
 }
@@ -44,11 +51,13 @@ export const getOrganizationSettingsPages = ({
   organization,
   showBillingSettings,
   showOrgApiKeySettings,
+  showAuditLogs,
   isLangfuseCloud,
 }: {
   organization: { id: string; name: string; metadata: Record<string, unknown> };
   showBillingSettings: boolean;
   showOrgApiKeySettings: boolean;
+  showAuditLogs: boolean;
   isLangfuseCloud: boolean;
 }): OrganizationSettingsPage[] => [
   {
@@ -66,9 +75,13 @@ export const getOrganizationSettingsPages = ({
               name: organization.name,
               id: organization.id,
               ...organization.metadata,
+              ...(env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION && {
+                cloudRegion: env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION,
+              }),
             }}
           />
         </div>
+        <AIFeatureSwitch />
         <SettingsDangerZone
           items={[
             {
@@ -107,6 +120,13 @@ export const getOrganizationSettingsPages = ({
         </div>
       </div>
     ),
+  },
+  {
+    title: "Audit Logs",
+    slug: "audit-logs",
+    cmdKKeywords: ["audit", "logs", "history", "changes"],
+    content: <OrgAuditLogsSettingsPage orgId={organization.id} />,
+    show: showAuditLogs,
   },
   {
     title: "Billing",

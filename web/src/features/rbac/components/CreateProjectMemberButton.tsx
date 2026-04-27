@@ -43,8 +43,8 @@ import { ActionButton } from "@/src/components/ActionButton";
 
 const formSchema = z.object({
   email: z.string().trim().email(),
-  orgRole: z.nativeEnum(Role),
-  projectRole: z.nativeEnum(Role),
+  orgRole: z.enum(Role),
+  projectRole: z.enum(Role),
 });
 
 export function CreateProjectMemberButton(props: {
@@ -65,6 +65,8 @@ export function CreateProjectMemberButton(props: {
   const orgMemberCount = api.members.allFromOrg.useQuery(
     {
       orgId: props.orgId,
+      page: 0,
+      limit: 1,
     },
     {
       enabled: hasOrgAccess,
@@ -73,6 +75,8 @@ export function CreateProjectMemberButton(props: {
   const inviteCount = api.members.allInvitesFromOrg.useQuery(
     {
       orgId: props.orgId,
+      page: 0,
+      limit: 1,
     },
     {
       enabled: hasOrgAccess,
@@ -92,7 +96,7 @@ export function CreateProjectMemberButton(props: {
       }),
   });
 
-  const form = useForm<z.infer<typeof formSchema>>({
+  const form = useForm({
     resolver: zodResolver(formSchema),
     defaultValues: {
       email: "",
@@ -136,7 +140,7 @@ export function CreateProjectMemberButton(props: {
         <DialogTrigger asChild>
           <ActionButton
             variant="secondary"
-            loading={mutCreateProjectMember.isLoading}
+            loading={mutCreateProjectMember.isPending}
             hasAccess={hasOrgAccess || hasOnlySingleProjectAccess}
             limit={orgMemberLimit}
             limitValue={(orgMemberCount ?? 0) + (inviteCount ?? 0)}
@@ -155,11 +159,7 @@ export function CreateProjectMemberButton(props: {
             </DialogTitle>
           </DialogHeader>
           <Form {...form}>
-            <form
-              className="space-y-6"
-              // eslint-disable-next-line @typescript-eslint/no-misused-promises
-              onSubmit={form.handleSubmit(onSubmit)}
-            >
+            <form className="space-y-6" onSubmit={form.handleSubmit(onSubmit)}>
               <DialogBody>
                 <FormField
                   control={form.control}

@@ -6,7 +6,9 @@ import {
   Cog,
   ExternalLink,
   AlertCircle,
+  ExternalLinkIcon,
 } from "lucide-react";
+import { Badge } from "@/src/components/ui/badge";
 import {
   Popover,
   PopoverContent,
@@ -24,6 +26,7 @@ import {
 import { cn } from "@/src/utils/tailwind";
 import { Button } from "@/src/components/ui/button";
 import { useState } from "react";
+import Link from "next/link";
 import { useExperimentEvaluatorSelection } from "@/src/features/experiments/hooks/useExperimentEvaluatorSelection";
 import { useTemplatesValidation } from "@/src/features/evals/hooks/useTemplatesValidation";
 import {
@@ -34,6 +37,7 @@ import {
 import { useSingleTemplateValidation } from "@/src/features/evals/hooks/useSingleTemplateValidation";
 import { getMaintainer } from "@/src/features/evals/utils/typeHelpers";
 import { MaintainerTooltip } from "@/src/features/evals/components/maintainer-tooltip";
+import { env } from "@/src/env.mjs";
 
 type TemplateSelectorProps = {
   projectId: string;
@@ -42,8 +46,10 @@ type TemplateSelectorProps = {
   disabled?: boolean;
   activeTemplateIds?: string[];
   inactiveTemplateIds?: string[];
+  evaluatorTargetObjects?: Record<string, string>;
   onConfigureTemplate?: (templateId: string) => void;
   onSelectEvaluator?: (templateId: string) => void;
+  onEvaluatorToggled?: () => void;
   className?: string;
 };
 
@@ -53,8 +59,10 @@ export const TemplateSelector = ({
   evalTemplates,
   activeTemplateIds,
   inactiveTemplateIds,
+  evaluatorTargetObjects,
   onConfigureTemplate,
   onSelectEvaluator,
+  onEvaluatorToggled,
   className,
   disabled = false,
 }: TemplateSelectorProps) => {
@@ -71,6 +79,7 @@ export const TemplateSelector = ({
     initialActiveTemplateIds: activeTemplateIds,
     initialInactiveTemplateIds: inactiveTemplateIds,
     onSelectEvaluator,
+    onEvaluatorToggled,
   });
 
   // Validation for templates requiring default model
@@ -166,10 +175,11 @@ export const TemplateSelector = ({
               className="h-9"
               value={search}
               onValueChange={setSearch}
+              variant="bottom"
             />
             <div
               tabIndex={0}
-              className="overflow-y-auto focus:outline-none"
+              className="overflow-y-auto focus:outline-hidden"
               style={{ maxHeight: "300px" }}
               onWheel={(e) => {
                 // Prevent the wheel event from being captured by parent elements
@@ -195,6 +205,9 @@ export const TemplateSelector = ({
                           latestTemplate.id,
                         );
                         const isInvalid = isTemplateInvalid(latestTemplate);
+                        const isLegacy =
+                          evaluatorTargetObjects?.[latestTemplate.id] ===
+                          "dataset";
 
                         return (
                           <InputCommandItem
@@ -210,20 +223,34 @@ export const TemplateSelector = ({
                               <div className="mr-2 h-4 w-4" />
                             )}
                             {name}
+                            {isLegacy && (
+                              <Badge variant="outline" className="ml-2 text-xs">
+                                legacy
+                              </Badge>
+                            )}
                             {isInvalid && (
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <AlertCircle className="ml-1 h-4 w-4 text-yellow-500" />
                                 </TooltipTrigger>
-                                <TooltipContent>
-                                  Requires project-level evaluation model
+                                <TooltipContent className="max-h-[50dvh] overflow-y-auto text-xs break-normal whitespace-normal">
+                                  <p>Requires project-level evaluation model</p>
+                                  <Link
+                                    href={`/project/${projectId}/evals/default-model`}
+                                    className="mt-2 flex items-center gap-1 text-blue-600 hover:underline"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                  >
+                                    <ExternalLinkIcon className="h-3 w-3" />
+                                    Configure default model
+                                  </Link>
                                 </TooltipContent>
                               </Tooltip>
                             )}
                             {isInactive && (
                               <div
-                                title="The evaluator has been used in the past but is currently paused. It will not run in this experiment. You can reactivate it if you wish"
-                                className="ml-2 text-xs text-muted-foreground"
+                                title="The evaluator has been used in the past but is currently paused. It will not run against outputs created in this dataset run. You can reactivate it if you wish"
+                                className="text-muted-foreground ml-2 text-xs"
                               >
                                 Paused
                               </div>
@@ -267,6 +294,9 @@ export const TemplateSelector = ({
                       const isActive = isTemplateActive(latestTemplate.id);
                       const isInactive = isTemplateInactive(latestTemplate.id);
                       const isInvalid = isTemplateInvalid(latestTemplate);
+                      const isLegacy =
+                        evaluatorTargetObjects?.[latestTemplate.id] ===
+                        "dataset";
 
                       return (
                         <InputCommandItem
@@ -285,20 +315,34 @@ export const TemplateSelector = ({
                           <MaintainerTooltip
                             maintainer={getMaintainer(latestTemplate)}
                           />
+                          {isLegacy && (
+                            <Badge variant="outline" className="ml-2 text-xs">
+                              legacy
+                            </Badge>
+                          )}
                           {isInvalid && (
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <AlertCircle className="ml-1 h-4 w-4 text-yellow-500" />
                               </TooltipTrigger>
-                              <TooltipContent>
-                                Requires project-level evaluation model
+                              <TooltipContent className="max-h-[50dvh] overflow-y-auto text-xs break-normal whitespace-normal">
+                                <p>Requires project-level evaluation model</p>
+                                <Link
+                                  href={`/project/${projectId}/evals/default-model`}
+                                  className="mt-2 flex items-center gap-1 text-blue-600 hover:underline"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >
+                                  <ExternalLinkIcon className="h-3 w-3" />
+                                  Configure default model
+                                </Link>
                               </TooltipContent>
                             </Tooltip>
                           )}
                           {isInactive && (
                             <div
-                              title="The evaluator has been used in the past but is currently paused. It will not run in this experiment. You can reactivate it if you wish"
-                              className="ml-2 text-xs text-muted-foreground"
+                              title="The evaluator has been used in the past but is currently paused. It will not run against outputs created in this dataset run. You can reactivate it if you wish"
+                              className="text-muted-foreground ml-2 text-xs"
                             >
                               Paused
                             </div>
@@ -333,7 +377,7 @@ export const TemplateSelector = ({
                     onSelect={() => {
                       if (disabled) return;
                       window.open(
-                        `/project/${projectId}/evals/templates/new`,
+                        `${env.NEXT_PUBLIC_BASE_PATH ?? ""}/project/${projectId}/evals/templates/new`,
                         "_blank",
                       );
                     }}
@@ -346,7 +390,7 @@ export const TemplateSelector = ({
                       onSelect={() => {
                         if (disabled) return;
                         window.open(
-                          `/project/${projectId}/evals/default-model`,
+                          `${env.NEXT_PUBLIC_BASE_PATH ?? ""}/project/${projectId}/evals/default-model`,
                           "_blank",
                         );
                       }}

@@ -6,6 +6,35 @@ const base = z.object({
   }),
 });
 
+const tokenEndpointAuthMethod = z
+  .enum([
+    "client_secret_basic",
+    "client_secret_post",
+    "client_secret_jwt",
+    "private_key_jwt",
+    "tls_client_auth",
+    "self_signed_tls_client_auth",
+    "none",
+  ])
+  .optional();
+
+const idTokenSignedResponseAlg = z
+  .enum([
+    "RS256",
+    "RS384",
+    "RS512",
+    "ES256",
+    "ES384",
+    "ES512",
+    "PS256",
+    "PS384",
+    "PS512",
+    "HS256",
+    "HS384",
+    "HS512",
+  ])
+  .optional();
+
 export const GoogleProviderSchema = base.extend({
   authProvider: z.literal("google"),
   authConfig: z
@@ -13,6 +42,8 @@ export const GoogleProviderSchema = base.extend({
       clientId: z.string(),
       clientSecret: z.string(),
       allowDangerousEmailAccountLinking: z.boolean().optional().default(false),
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+      idTokenSignedResponseAlg: idTokenSignedResponseAlg,
     })
     .nullish(),
 });
@@ -24,6 +55,7 @@ export const GithubProviderSchema = base.extend({
       clientId: z.string(),
       clientSecret: z.string(),
       allowDangerousEmailAccountLinking: z.boolean().optional().default(false),
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod,
     })
     .nullish(),
 });
@@ -38,6 +70,7 @@ export const GithubEnterpriseProviderSchema = base.extend({
         baseUrl: z.string().url(),
       }),
       allowDangerousEmailAccountLinking: z.boolean().optional().default(false),
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod,
     })
     .nullish(),
 });
@@ -50,6 +83,8 @@ export const GitlabProviderSchema = base.extend({
       clientSecret: z.string(),
       issuer: z.string().optional(),
       allowDangerousEmailAccountLinking: z.boolean().optional().default(false),
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+      idTokenSignedResponseAlg: idTokenSignedResponseAlg,
     })
     .nullish(),
 });
@@ -62,6 +97,8 @@ export const Auth0ProviderSchema = base.extend({
       clientSecret: z.string(),
       issuer: z.string(),
       allowDangerousEmailAccountLinking: z.boolean().optional().default(false),
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+      idTokenSignedResponseAlg: idTokenSignedResponseAlg,
     })
     .nullish(),
 });
@@ -72,8 +109,43 @@ export const OktaProviderSchema = base.extend({
     .object({
       clientId: z.string(),
       clientSecret: z.string(),
+      issuer: z.string().startsWith("https://", {
+        message: "Okta issuer must start with https://",
+      }),
+      allowDangerousEmailAccountLinking: z.boolean().optional().default(false),
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+      idTokenSignedResponseAlg: idTokenSignedResponseAlg,
+    })
+    .nullish(),
+});
+
+export const AuthentikProviderSchema = base.extend({
+  authProvider: z.literal("authentik"),
+  authConfig: z
+    .object({
+      clientId: z.string(),
+      clientSecret: z.string(),
+      issuer: z.string().regex(/^https:\/\/.+\/application\/o\/[^/]+$/, {
+        message:
+          "Authentik issuer must be in format https://<domain>/application/o/<slug> without trailing slash",
+      }),
+      allowDangerousEmailAccountLinking: z.boolean().optional().default(false),
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+      idTokenSignedResponseAlg: idTokenSignedResponseAlg,
+    })
+    .nullish(),
+});
+
+export const OneLoginProviderSchema = base.extend({
+  authProvider: z.literal("onelogin"),
+  authConfig: z
+    .object({
+      clientId: z.string(),
+      clientSecret: z.string(),
       issuer: z.string(),
       allowDangerousEmailAccountLinking: z.boolean().optional().default(false),
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+      idTokenSignedResponseAlg: idTokenSignedResponseAlg,
     })
     .nullish(),
 });
@@ -86,6 +158,8 @@ export const AzureAdProviderSchema = base.extend({
       clientSecret: z.string(),
       tenantId: z.string(),
       allowDangerousEmailAccountLinking: z.boolean().optional().default(false),
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+      idTokenSignedResponseAlg: idTokenSignedResponseAlg,
     })
     .nullish(),
 });
@@ -98,6 +172,8 @@ export const CognitoProviderSchema = base.extend({
       clientSecret: z.string(),
       issuer: z.string(),
       allowDangerousEmailAccountLinking: z.boolean().optional().default(false),
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+      idTokenSignedResponseAlg: idTokenSignedResponseAlg,
     })
     .nullish(),
 });
@@ -106,10 +182,13 @@ export const KeycloakProviderSchema = base.extend({
   authProvider: z.literal("keycloak"),
   authConfig: z
     .object({
+      name: z.string().optional(),
       clientId: z.string(),
       clientSecret: z.string(),
       issuer: z.string(),
       allowDangerousEmailAccountLinking: z.boolean().optional().default(false),
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+      idTokenSignedResponseAlg: idTokenSignedResponseAlg,
     })
     .nullish(),
 });
@@ -125,6 +204,23 @@ export const CustomProviderSchema = base.extend({
       scope: z.string().nullish(),
       idToken: z.boolean().optional().default(true),
       allowDangerousEmailAccountLinking: z.boolean().optional().default(false),
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+      idTokenSignedResponseAlg: idTokenSignedResponseAlg,
+    })
+    .nullish(),
+});
+
+export const JumpCloudProviderSchema = base.extend({
+  authProvider: z.literal("jumpcloud"),
+  authConfig: z
+    .object({
+      clientId: z.string(),
+      clientSecret: z.string(),
+      issuer: z.url(),
+      scope: z.string().nullish(),
+      allowDangerousEmailAccountLinking: z.boolean().optional().default(false),
+      tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+      idTokenSignedResponseAlg: idTokenSignedResponseAlg,
     })
     .nullish(),
 });
@@ -137,10 +233,13 @@ export type GithubEnterpriseProviderSchema = z.infer<
 export type GitlabProviderSchema = z.infer<typeof GitlabProviderSchema>;
 export type Auth0ProviderSchema = z.infer<typeof Auth0ProviderSchema>;
 export type OktaProviderSchema = z.infer<typeof OktaProviderSchema>;
+export type AuthentikProviderSchema = z.infer<typeof AuthentikProviderSchema>;
+export type OneLoginProviderSchema = z.infer<typeof OneLoginProviderSchema>;
 export type AzureAdProviderSchema = z.infer<typeof AzureAdProviderSchema>;
 export type CognitoProviderSchema = z.infer<typeof CognitoProviderSchema>;
 export type KeycloakProviderSchema = z.infer<typeof KeycloakProviderSchema>;
 export type CustomProviderSchema = z.infer<typeof CustomProviderSchema>;
+export type JumpCloudProviderSchema = z.infer<typeof JumpCloudProviderSchema>;
 
 export const SsoProviderSchema = z.discriminatedUnion("authProvider", [
   GoogleProviderSchema,
@@ -149,9 +248,12 @@ export const SsoProviderSchema = z.discriminatedUnion("authProvider", [
   GitlabProviderSchema,
   Auth0ProviderSchema,
   OktaProviderSchema,
+  AuthentikProviderSchema,
+  OneLoginProviderSchema,
   AzureAdProviderSchema,
   CognitoProviderSchema,
   KeycloakProviderSchema,
+  JumpCloudProviderSchema,
   CustomProviderSchema,
 ]);
 

@@ -12,13 +12,11 @@ import {
   dashboardDateRangeAggregationSettings,
   DASHBOARD_AGGREGATION_PLACEHOLDER,
   type DashboardDateRangeOptions,
-  type TableDateRangeOptions,
   DASHBOARD_AGGREGATION_OPTIONS,
   type DashboardDateRange,
-  TABLE_AGGREGATION_OPTIONS,
-  getDateFromOption,
-  isTableDataRangeOptionAvailable,
   isDashboardDateRangeOptionAvailable,
+  getAbbreviatedTimeRange,
+  getTimeRangeLabel,
 } from "@/src/utils/date-range-utils";
 import { useEntitlementLimit } from "@/src/features/entitlements/hooks";
 import { useMemo } from "react";
@@ -44,25 +42,41 @@ const BaseDateRangeDropdown = <T extends string>({
 }: BaseDateRangeDropdownProps<T>) => {
   return (
     <Select value={selectedOption} onValueChange={onSelectionChange}>
-      <SelectTrigger className="w-fit font-medium hover:bg-accent hover:text-accent-foreground focus:ring-0 focus:ring-offset-0">
-        {selectedOption !== "All time" && <span>Past</span>}
-        <SelectValue placeholder="Select" />
+      <SelectTrigger className="hover:bg-accent hover:text-accent-foreground w-fit font-medium focus:ring-0 focus:ring-offset-0">
+        <SelectValue placeholder="Select">
+          <div className="flex items-center gap-2">
+            <span className="bg-muted w-10 rounded px-1.5 py-0.5 text-center text-xs">
+              {getAbbreviatedTimeRange(selectedOption)}
+            </span>
+            <span>{getTimeRangeLabel(selectedOption)}</span>
+          </div>
+        </SelectValue>
       </SelectTrigger>
-      <SelectContent position="popper" defaultValue={60}>
+      <SelectContent
+        position="popper"
+        defaultValue={60}
+        className="**:data-checkmark:hidden"
+      >
         {options.map((item) => {
           const itemObj = (
             <SelectItem
               key={item}
               value={item}
               disabled={limitedOptions?.includes(item)}
+              className="pl-2"
             >
-              {item}
+              <div className="flex items-center gap-2">
+                <span className="bg-muted w-10 rounded px-1.5 py-0.5 text-center text-xs">
+                  {getAbbreviatedTimeRange(item)}
+                </span>
+                <span>{getTimeRangeLabel(item)}</span>
+              </div>
             </SelectItem>
           );
           const isLimited = limitedOptions?.includes(item);
 
           return isLimited ? (
-            <HoverCard openDelay={200}>
+            <HoverCard openDelay={200} key={item}>
               <HoverCardTrigger asChild>
                 <span>{itemObj}</span>
               </HoverCardTrigger>
@@ -113,7 +127,7 @@ export const DashboardDateRangeDropdown: React.FC<
         value as keyof typeof dashboardDateRangeAggregationSettings
       ];
     setDateRangeAndOption(value, {
-      from: addMinutes(new Date(), -setting.minutes),
+      from: addMinutes(new Date(), -setting!.minutes!),
       to: new Date(),
     });
   };
@@ -126,49 +140,6 @@ export const DashboardDateRangeDropdown: React.FC<
     <BaseDateRangeDropdown
       selectedOption={selectedOption}
       options={options}
-      limitedOptions={disabledOptions}
-      onSelectionChange={onDropDownSelection}
-    />
-  );
-};
-
-type TableDateRangeDropdownProps = {
-  selectedOption: TableDateRangeOptions;
-  setDateRangeAndOption: (
-    option: TableDateRangeOptions,
-    date?: DashboardDateRange,
-  ) => void;
-};
-
-export const TableDateRangeDropdown: React.FC<TableDateRangeDropdownProps> = ({
-  selectedOption,
-  setDateRangeAndOption,
-}) => {
-  const lookbackLimit = useEntitlementLimit("data-access-days");
-  const disabledOptions = useMemo(() => {
-    return TABLE_AGGREGATION_OPTIONS.filter(
-      (option) =>
-        !isTableDataRangeOptionAvailable({ option, limitDays: lookbackLimit }),
-    );
-  }, [lookbackLimit]);
-
-  const onDropDownSelection = (value: TableDateRangeOptions) => {
-    const dateFromOption = getDateFromOption({
-      filterSource: "TABLE",
-      option: value,
-    });
-
-    const initialDateRange = !!dateFromOption
-      ? { from: dateFromOption, to: new Date() }
-      : undefined;
-
-    setDateRangeAndOption(value, initialDateRange);
-  };
-
-  return (
-    <BaseDateRangeDropdown
-      selectedOption={selectedOption}
-      options={TABLE_AGGREGATION_OPTIONS}
       limitedOptions={disabledOptions}
       onSelectionChange={onDropDownSelection}
     />

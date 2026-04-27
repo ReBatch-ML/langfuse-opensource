@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { PlusIcon } from "lucide-react";
 
@@ -15,6 +15,12 @@ import {
 
 import { type NewPromptFormSchemaType } from "./validation";
 import { PromptSelectionDialog } from "../PromptSelectionDialog";
+import {
+  MessageSearchPageProvider,
+  MessageSearchProvider,
+  MessageSearchToolbar,
+  useSyncMessageSearchMessages,
+} from "@/src/components/ChatMessages/MessageSearch";
 
 import type { ControllerRenderProps } from "react-hook-form";
 import type { MessagesContext } from "@/src/components/ChatMessages/types";
@@ -24,11 +30,24 @@ type PromptChatMessagesProps = ControllerRenderProps<
   "chatPrompt"
 > & { initialMessages: unknown; projectId: string | undefined };
 
+const PROMPT_CHAT_MESSAGES_SEARCH_PAGE_ID = "prompt-chat-messages";
+
+const PromptChatMessagesSearchSync = ({
+  messages,
+}: {
+  messages: ChatMessageWithId[];
+}) => {
+  useSyncMessageSearchMessages(PROMPT_CHAT_MESSAGES_SEARCH_PAGE_ID, messages);
+
+  return null;
+};
+
 export const PromptChatMessages: React.FC<PromptChatMessagesProps> = ({
   onChange,
   initialMessages,
   projectId,
 }) => {
+  const searchRootRef = useRef<HTMLDivElement | null>(null);
   const [messages, setMessages] = useState<ChatMessageWithId[]>([]);
   const [availableRoles, setAvailableRoles] = useState<string[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -50,17 +69,31 @@ export const PromptChatMessages: React.FC<PromptChatMessagesProps> = ({
     }
 
     setMessages(
-      parsedMessages.data.map((message) => ({
-        ...message,
-        id: uuidv4(),
-        type: ChatMessageType.PublicAPICreated,
-      })),
+      parsedMessages.data.map((message) => {
+        const id = uuidv4();
+        // TODO: clean up - Placeholder messages could also be API created..
+        if ("type" in message && message.type === ChatMessageType.Placeholder) {
+          return {
+            ...message,
+            id,
+            type: ChatMessageType.Placeholder,
+          } as ChatMessageWithId;
+        } else {
+          return {
+            ...message,
+            id,
+            type: ChatMessageType.PublicAPICreated,
+          } as ChatMessageWithId;
+        }
+      }),
     );
 
     const customRoles = parsedMessages.data.reduce((acc, message) => {
-      const { role } = message;
-      if (ChatMessageDefaultRoleSchema.safeParse(role).error) {
-        acc.add(role);
+      if ("role" in message) {
+        const { role } = message;
+        if (ChatMessageDefaultRoleSchema.safeParse(role).error) {
+          acc.add(role);
+        }
       }
       return acc;
     }, new Set<string>());
@@ -109,38 +142,51 @@ export const PromptChatMessages: React.FC<PromptChatMessagesProps> = ({
   }, [messages, onChange]);
 
   return (
-    <div>
-      <div className="my-2 flex justify-end">
-        <Button
-          type="button"
-          variant="outline"
-          className="flex items-center gap-1 px-2 py-1"
-          onClick={() => setIsDialogOpen(true)}
-        >
-          <PlusIcon className="h-4 w-4" />
-          <span className="text-xs">Add prompt reference</span>
-        </Button>
+    <MessageSearchProvider
+      pageIds={[PROMPT_CHAT_MESSAGES_SEARCH_PAGE_ID]}
+      captureRootRef={searchRootRef}
+    >
+      <MessageSearchPageProvider pageId={PROMPT_CHAT_MESSAGES_SEARCH_PAGE_ID}>
+        <PromptChatMessagesSearchSync messages={messages} />
 
-        {projectId && (
-          <PromptSelectionDialog
-            isOpen={isDialogOpen}
-            onClose={() => setIsDialogOpen(false)}
-            projectId={projectId}
+        <div ref={searchRootRef}>
+          <div className="my-2 flex flex-wrap items-center justify-between gap-2">
+            <MessageSearchToolbar />
+
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                className="flex items-center gap-1 px-2 py-1"
+                onClick={() => setIsDialogOpen(true)}
+              >
+                <PlusIcon className="h-4 w-4" />
+                <span className="text-xs">Add prompt reference</span>
+              </Button>
+
+              {projectId && (
+                <PromptSelectionDialog
+                  isOpen={isDialogOpen}
+                  onClose={() => setIsDialogOpen(false)}
+                  projectId={projectId}
+                />
+              )}
+            </div>
+          </div>
+
+          <ChatMessages
+            {...{
+              messages,
+              addMessage,
+              setMessages,
+              deleteMessage,
+              updateMessage,
+              replaceMessage,
+              availableRoles,
+            }}
           />
-        )}
-      </div>
-
-      <ChatMessages
-        {...{
-          messages,
-          addMessage,
-          setMessages,
-          deleteMessage,
-          updateMessage,
-          replaceMessage,
-          availableRoles,
-        }}
-      />
-    </div>
+        </div>
+      </MessageSearchPageProvider>
+    </MessageSearchProvider>
   );
 };

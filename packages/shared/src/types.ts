@@ -7,7 +7,7 @@ export type FilterCondition = z.infer<typeof singleFilter>;
 export type FilterState = FilterCondition[];
 
 // to be used in the client during editing
-type MakeOptional<T> = {
+export type MakeOptional<T> = {
   [K in keyof T]?: T[K];
 };
 // if key is value, add string as value
@@ -24,6 +24,7 @@ export type FilterOption = {
   value: string;
   count?: number;
   displayValue?: string; // FIX: Temporary workaround: Used to display a different value than the actual value since multiSelect doesn't support key-value pairs
+  description?: string;
 };
 
 export type TableName =
@@ -36,4 +37,9 @@ export type TableName =
   | "widgets"
   | "users"
   | "eval_configs"
-  | "job_executions";
+  | "dataset_items"
+  | "job_executions"
+  | "dataset_runs"
+  | "dataset_run_items_by_run"
+  | "experiments"
+  | "experiment-items";

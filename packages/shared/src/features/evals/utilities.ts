@@ -1,5 +1,4 @@
-import z from "zod";
-import { variableMapping } from "./types";
+import { JSONPath } from "jsonpath-plus";
 
 /**
  * Parses an unknown value to a string representation
@@ -26,41 +25,90 @@ export const parseUnknownToString = (value: unknown): string => {
   return String(value);
 };
 
-function parseJsonDefault(selectedColumn: unknown, jsonSelector: string) {
-  // Front-end friendly JSON path extraction
-  const parsedJson =
-    typeof selectedColumn === "string"
-      ? JSON.parse(selectedColumn)
-      : selectedColumn;
+/**
+ * Recursively parses JSON strings that may have been encoded multiple times.
+ * This handles cases where data has been JSON.stringify'd multiple times.
+ *
+ * @param value - The potentially multi-encoded JSON string
+ * @returns The final parsed object or the original value if parsing fails
+ */
+function parseMultiEncodedJson(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
 
-  // Simple path extraction (could use a library)
-  return jsonSelector
-    .split(".")
-    .reduce((o, key) => (o as any)?.[key], parsedJson);
+  try {
+    const parsed = JSON.parse(value);
+
+    // If result is still a string, it might be double-encoded - recurse
+    if (typeof parsed === "string") {
+      return parseMultiEncodedJson(parsed);
+    }
+
+    return parsed;
+  } catch {
+    // If parsing fails, return original value
+    return value;
+  }
+}
+
+function parseJsonDefault(selectedColumn: unknown, jsonSelector: string) {
+  // JSONPath can only query objects/arrays — return primitives as-is
+  if (typeof selectedColumn !== "object" || selectedColumn === null) {
+    return selectedColumn;
+  }
+
+  const result = JSONPath({
+    path: jsonSelector,
+    json: selectedColumn as any, // JSONPath accepts unknown but types are strict
+    eval: false,
+  });
+
+  if (!Array.isArray(result) || result.length === 0) {
+    return undefined;
+  }
+
+  // For single-match queries (e.g. $.name), return the unwrapped value.
+  // For multi-match queries (e.g. $[1:], $[*].name), return the full array.
+  return result.length === 1 ? result[0] : result;
 }
 
 export function extractValueFromObject(
   obj: Record<string, unknown>,
-  mapping: z.infer<typeof variableMapping>,
+  selectedColumnId: string,
+  jsonSelector?: string,
   parseJson?: (selectedColumn: unknown, jsonSelector: string) => unknown,
-): string {
-  const selectedColumn = obj[mapping.selectedColumnId];
+): { value: string; error: Error | null } {
+  const selectedColumn = obj[selectedColumnId];
+
   const jsonParser = parseJson || parseJsonDefault;
 
   let jsonSelectedColumn;
-  if (mapping.jsonSelector && selectedColumn) {
+  let error: Error | null = null;
+
+  if (jsonSelector && selectedColumn) {
+    // Only parse multi-encoded JSON when a selector is present — avoids
+    // mutating formatting (e.g. whitespace) for the no-selector passthrough.
+    const parsed =
+      typeof selectedColumn === "string"
+        ? parseMultiEncodedJson(selectedColumn)
+        : selectedColumn;
+
     try {
-      jsonSelectedColumn = jsonParser(selectedColumn, mapping.jsonSelector);
-    } catch (error) {
-      console.error(
-        `Error parsing JSON selector: ${mapping.jsonSelector}`,
-        error,
-      );
-      jsonSelectedColumn = selectedColumn;
+      jsonSelectedColumn = jsonParser(parsed, jsonSelector);
+    } catch (err) {
+      error =
+        err instanceof Error
+          ? err
+          : new Error("There was an unknown error parsing the JSON");
+      jsonSelectedColumn = selectedColumn; // Fallback to raw original value
     }
   } else {
     jsonSelectedColumn = selectedColumn;
   }
 
-  return parseUnknownToString(jsonSelectedColumn);
+  return {
+    value: parseUnknownToString(jsonSelectedColumn),
+    error,
+  };
 }

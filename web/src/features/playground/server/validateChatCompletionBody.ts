@@ -4,15 +4,18 @@ import {
   LLMJSONSchema,
   LLMToolDefinitionSchema,
   ChatMessageSchema,
+  JSONObjectSchema,
 } from "@langfuse/shared";
 
 const ModelParamsSchema = z.object({
   provider: z.string(),
-  adapter: z.nativeEnum(LLMAdapter),
+  adapter: z.enum(LLMAdapter),
   model: z.string(),
   temperature: z.number().optional(),
   max_tokens: z.number().optional(),
   top_p: z.number().optional(),
+  maxReasoningTokens: z.number().optional(),
+  providerOptions: JSONObjectSchema.optional(),
 });
 
 export const ChatCompletionBodySchema = z.object({
@@ -21,6 +24,7 @@ export const ChatCompletionBodySchema = z.object({
   modelParams: ModelParamsSchema,
   tools: z.array(LLMToolDefinitionSchema).optional(),
   structuredOutputSchema: LLMJSONSchema.optional(),
+  streaming: z.boolean().optional().default(true),
 });
 
 export const validateChatCompletionBody = (input: unknown) => {

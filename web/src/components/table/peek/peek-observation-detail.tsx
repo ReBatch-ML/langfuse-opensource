@@ -1,33 +1,33 @@
-import { useObservationPeekState } from "@/src/components/table/peek/hooks/useObservationPeekState";
+import { useRouter } from "next/router";
 import { usePeekData } from "@/src/components/table/peek/hooks/usePeekData";
-import { type ObservationsTableRow } from "@/src/components/table/use-cases/observations";
-import { Trace } from "@/src/components/trace";
+import { Trace } from "@/src/components/trace2/Trace";
 import { Skeleton } from "@/src/components/ui/skeleton";
-import { StringParam, useQueryParam, withDefault } from "use-query-params";
 
 export const PeekViewObservationDetail = ({
   projectId,
-  row,
 }: {
   projectId: string;
-  row?: ObservationsTableRow;
 }) => {
-  const { peekId, timestamp } = useObservationPeekState("observations");
-  const effectiveTimestamp = row?.timestamp ?? timestamp;
+  const router = useRouter();
+  const peekId = router.query.peek as string | undefined;
+  const timestampParam = router.query.timestamp as string | undefined;
+
+  // Decode the timestamp parameter before parsing as Date
+  // This handles cases where the timestamp might be URL-encoded
+  const timestamp = timestampParam
+    ? new Date(decodeURIComponent(timestampParam))
+    : undefined;
+
+  const traceId = router.query.traceId as string | undefined;
 
   const trace = usePeekData({
     projectId,
-    traceId: row?.traceId,
-    timestamp: effectiveTimestamp,
+    traceId,
+    timestamp,
   });
 
-  const [selectedTab, setSelectedTab] = useQueryParam(
-    "display",
-    withDefault(StringParam, "details"),
-  );
-
-  if (!peekId || !row?.traceId || !trace.data || row.id !== peekId) {
-    return <Skeleton className="h-full w-full" />;
+  if (!peekId || !trace.data) {
+    return <Skeleton className="h-full w-full rounded-none" />;
   }
 
   return (
@@ -35,10 +35,10 @@ export const PeekViewObservationDetail = ({
       key={`${trace.data.id}-${peekId}`}
       trace={trace.data}
       scores={trace.data.scores}
+      corrections={trace.data.corrections}
       projectId={trace.data.projectId}
       observations={trace.data.observations}
-      selectedTab={selectedTab}
-      setSelectedTab={setSelectedTab}
+      context="peek"
     />
   );
 };

@@ -9,6 +9,31 @@ import { logger } from "../logger";
 
 // type CallbackFn<T> = () => T;
 
+/**
+ * IORedis request hook that records the full Redis command as a span attribute.
+ * Redacts credentials from AUTH/HELLO and values from API key cache operations.
+ */
+export function ioredisRequestHook(
+  span: opentelemetry.Span,
+  { cmdName, cmdArgs }: { cmdName: string; cmdArgs: unknown[] },
+): void {
+  if (!Array.isArray(cmdArgs) || cmdArgs.length === 0) return;
+  const cmd = cmdName.toUpperCase();
+  // AUTH and HELLO carry raw credentials — redact all args
+  if (cmd === "AUTH" || cmd === "HELLO") {
+    span.setAttribute("redis.full_command", `${cmdName} [REDACTED]`);
+    return;
+  }
+  const args = [...cmdArgs].map(String);
+  // Redact API key cache values: SET [prefix:]api-key:{hash} <json>
+  if (args[0]?.includes("api-key:")) {
+    for (let i = 1; i < args.length; i++) {
+      args[i] = "[REDACTED]";
+    }
+  }
+  span.setAttribute("redis.full_command", `${cmdName} ${args.join(" ")}`);
+}
+
 export type TCarrier = {
   traceparent?: string;
   tracestate?: string;
@@ -20,6 +45,7 @@ export type SpanCtx = {
   rootSpan?: boolean; // https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/overview.md#traces
   traceScope?: string;
   traceContext?: TCarrier;
+  startNewTrace?: boolean; // Start a new trace, severing any parent trace relationships
 };
 
 type AsyncCallbackFn<T> = (span: opentelemetry.Span) => Promise<T>;
@@ -28,17 +54,19 @@ export async function instrumentAsync<T>(
   ctx: SpanCtx,
   callback: AsyncCallbackFn<T>,
 ): Promise<T> {
-  const activeContext = ctx.traceContext
-    ? opentelemetry.propagation.extract(
-        opentelemetry.context.active(),
-        ctx.traceContext,
-      )
-    : opentelemetry.context.active();
+  const activeContext = ctx.startNewTrace
+    ? opentelemetry.ROOT_CONTEXT
+    : ctx.traceContext
+      ? opentelemetry.propagation.extract(
+          opentelemetry.context.active(),
+          ctx.traceContext,
+        )
+      : opentelemetry.context.active();
 
   return getTracer(ctx.traceScope ?? callback.name).startActiveSpan(
     ctx.name,
     {
-      root: !ctx.traceContext && ctx.rootSpan,
+      root: ctx.startNewTrace || (!ctx.traceContext && ctx.rootSpan),
       kind: ctx.spanKind,
     },
     activeContext,
@@ -70,17 +98,19 @@ export function instrumentSync<T>(
   ctx: SpanCtx,
   callback: SyncCallbackFn<T>,
 ): T {
-  const activeContext = ctx.traceContext
-    ? opentelemetry.propagation.extract(
-        opentelemetry.context.active(),
-        ctx.traceContext,
-      )
-    : opentelemetry.context.active();
+  const activeContext = ctx.startNewTrace
+    ? opentelemetry.ROOT_CONTEXT
+    : ctx.traceContext
+      ? opentelemetry.propagation.extract(
+          opentelemetry.context.active(),
+          ctx.traceContext,
+        )
+      : opentelemetry.context.active();
 
   return getTracer(ctx.traceScope ?? callback.name).startActiveSpan(
     ctx.name,
     {
-      root: !ctx.traceContext && ctx.rootSpan,
+      root: ctx.startNewTrace || (!ctx.traceContext && ctx.rootSpan),
       kind: ctx.spanKind,
     },
     activeContext,
@@ -157,6 +187,61 @@ export const traceException = (
   });
 };
 
+export const addUserToSpan = (
+  attributes: {
+    userId?: string;
+    projectId?: string;
+    email?: string;
+    orgId?: string;
+    plan?: string;
+  },
+  span?: opentelemetry.Span,
+) => {
+  const activeSpan = span ?? getCurrentSpan();
+
+  if (!activeSpan) {
+    return;
+  }
+
+  const ctx = opentelemetry.context.active();
+  let baggage =
+    opentelemetry.propagation.getBaggage(ctx) ??
+    opentelemetry.propagation.createBaggage();
+
+  if (attributes.userId) {
+    baggage = baggage.setEntry("user.id", {
+      value: attributes.userId,
+    });
+    activeSpan.setAttribute("user.id", attributes.userId);
+  }
+  if (attributes.email) {
+    baggage = baggage.setEntry("user.email", {
+      value: attributes.email,
+    });
+    activeSpan.setAttribute("user.email", attributes.email);
+  }
+  if (attributes.projectId) {
+    baggage = baggage.setEntry("langfuse.project.id", {
+      value: attributes.projectId,
+    });
+    activeSpan.setAttribute("langfuse.project.id", attributes.projectId);
+  }
+  if (attributes.orgId) {
+    baggage = baggage.setEntry("langfuse.org.id", {
+      value: attributes.orgId,
+    });
+    activeSpan.setAttribute("langfuse.org.id", attributes.orgId);
+  }
+  if (attributes.plan) {
+    baggage = baggage.setEntry("langfuse.org.plan", {
+      value: attributes.plan,
+    });
+    activeSpan.setAttribute("langfuse.org.plan", attributes.plan);
+  }
+
+  return opentelemetry.propagation.setBaggage(ctx, baggage);
+};
+
 export const getTracer = (name: string) => opentelemetry.trace.getTracer(name);
 
 const cloudWatchClient = new CloudWatchClient();
@@ -203,6 +288,25 @@ const flushMetricsToCloudWatch = () => {
     });
 };
 
+// Metrics ending with these suffixes have their tags flattened into the
+// CloudWatch metric name (excluding "unit"). Other metrics are unaffected.
+const CW_TAG_FLATTENED_SUFFIXES = [".depth", ".rate"];
+
+function buildCloudWatchKey(
+  stat: string,
+  tags?: { [tag: string]: string | number },
+): string {
+  if (!tags || !CW_TAG_FLATTENED_SUFFIXES.some((s) => stat.endsWith(s))) {
+    return stat;
+  }
+  const suffix = Object.entries(tags)
+    .filter(([k]) => k !== "unit")
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}_${v}`)
+    .join(".");
+  return suffix ? `${stat}.${suffix}` : stat;
+}
+
 export const recordGauge = (
   stat: string,
   value?: number | undefined,
@@ -213,7 +317,7 @@ export const recordGauge = (
     | undefined,
 ) => {
   if (env.ENABLE_AWS_CLOUDWATCH_METRIC_PUBLISHING === "true") {
-    sendCloudWatchMetric(stat, value ?? 0, true);
+    sendCloudWatchMetric(buildCloudWatchKey(stat, tags), value ?? 0, true);
   }
   dd.dogstatsd.gauge(stat, value, tags);
 };
@@ -224,7 +328,7 @@ export const recordIncrement = (
   tags?: { [tag: string]: string | number } | undefined,
 ) => {
   if (env.ENABLE_AWS_CLOUDWATCH_METRIC_PUBLISHING === "true") {
-    sendCloudWatchMetric(stat, value ?? 1, false);
+    sendCloudWatchMetric(buildCloudWatchKey(stat, tags), value ?? 1, false);
   }
   dd.dogstatsd.increment(stat, value, tags);
 };
